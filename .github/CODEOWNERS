@@ -1,0 +1,6 @@
+# Default owner for everything in this repo
+*                   @cygeusai
+
+# Backend surfaces get extra attention
+/supabase/          @cygeusai
+/.github/           @cygeusai

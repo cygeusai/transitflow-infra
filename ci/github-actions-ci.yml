@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  supabase-migrations:
+    name: Validate Supabase migrations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start local Postgres and apply all migrations
+        # Spins up the local stack and replays every migration in order.
+        # Fails the build if any migration is invalid or out of order.
+        run: |
+          supabase db start || true
+          supabase db reset --debug
+
+      - name: Lint database (advisors)
+        # Optional: surface security/performance advisories.
+        run: supabase db lint || true
+
+  edge-functions:
+    name: Type-check edge functions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v1
+        with:
+          deno-version: v1.x
+      - name: Check functions compile
+        run: |
+          for f in supabase/functions/*/index.ts; do
+            echo "Checking $f"
+            deno check "$f" || exit 1
+          done

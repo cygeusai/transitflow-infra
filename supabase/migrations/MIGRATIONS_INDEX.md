@@ -53,6 +53,12 @@ of what exists so nothing is silently dropped.
 | 163 | 20260724213447 | tf_system_health_qb_degraded_semantics |
 | 164 | 20260724220708 | integration_settings_dedup_and_health_hardening |
 | 165 | 20260724220737 | tf_integration_watchdog |
+| 166 | 20260724224124 | grc_it_controls_register |
+| 167 | 20260724224153 | tf_controls_evaluate |
+| 168 | 20260724224225 | grc_access_reviews |
+| 169 | 20260724224256 | grc_service_slos |
+| 170 | 20260724224332 | tf_it_governance_report_and_crons |
+| 171 | 20260724224440 | tf_controls_evaluate_distinct_accounts |
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

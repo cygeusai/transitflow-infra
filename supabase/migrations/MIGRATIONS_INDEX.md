@@ -59,6 +59,8 @@ of what exists so nothing is silently dropped.
 | 169 | 20260724224256 | grc_service_slos |
 | 170 | 20260724224332 | tf_it_governance_report_and_crons |
 | 171 | 20260724224440 | tf_controls_evaluate_distinct_accounts |
+| 172 | 20260724225908 | auto_ticket_registry_and_producers |
+| 173 | 20260724225950 | tf_integration_watchdog_autoticket_wiring |
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

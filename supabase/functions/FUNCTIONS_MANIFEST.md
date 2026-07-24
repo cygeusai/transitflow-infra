@@ -12,7 +12,7 @@ Two are included in full as reference (`tf-rent-pay`, `tf-stripe-webhook`); run
 | qbo-sync / qbo-connect | false | QuickBooks OAuth + read-only finance sync (v2: graceful reauth, self-heal, 200-on-expiry) |
 | tf-omni-inbound / tf-omni-send | false | Omnichannel CX messaging |
 | tf-meta-webhook | false | Meta Messenger/Instagram webhook |
-| tf-clickup-worker | false | ClickUp application/FNOL worker |
+| tf-clickup-worker | false | ClickUp application/FNOL worker (v2: closed-loop auto-ticket create + resolve-comment) |
 | tf-slack | false | Slack post worker |
 | hcp-webhook / hcp-estimate-push / tf-hcp-sync-techs | false | Housecall Pro |
 | ai-assist / ai-booking / intake-* | mixed | AI intake + booking |

@@ -1,11 +1,10 @@
 # Enabling CI
 
-`github-actions-ci.yml` is the ready-to-use GitHub Actions workflow. It is parked
-here because the initial push used a token without the "Workflows" permission.
+`github-actions-ci.yml` is the ready-to-use GitHub Actions workflow, parked here
+because the push token did not include the "Workflows" permission.
 
-To activate it, do either:
-- In the GitHub web UI: create the file `.github/workflows/ci.yml` and paste the
-  contents of `github-actions-ci.yml` (the browser editor can add workflows), or
-- Regenerate your token with Repository permissions → Workflows: Read and write,
-  then move the file: `git mv ci/github-actions-ci.yml .github/workflows/ci.yml`
-  and push.
+Enable it either way:
+- GitHub web UI (no token change): Add file -> create .github/workflows/ci.yml ->
+  paste the contents of github-actions-ci.yml. The browser is allowed to add workflows.
+- Token route: edit the fine-grained token -> Repository permissions -> Workflows:
+  Read and write. Then: git mv ci/github-actions-ci.yml .github/workflows/ci.yml and push.

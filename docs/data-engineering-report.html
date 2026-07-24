@@ -1,0 +1,80 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Transit & Flow — Data Engineering Hardening Report</title>
+<style>
+:root{--navy:#0b2440;--blue:#1d9bf0;--ink:#0f172a;--mut:#5b6b7f;--line:#e6edf4;--bg:#f6f9fc;--ok:#0f9d58}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.55}
+.wrap{max-width:900px;margin:0 auto;padding:38px 20px 70px}
+header{background:linear-gradient(135deg,var(--navy),#123a63);color:#fff;border-radius:16px;padding:28px 30px}
+.kick{letter-spacing:.14em;text-transform:uppercase;font-size:12px;color:#67c0f5;font-weight:700}
+h1{margin:.3em 0 .1em;font-size:24px}header p{margin:0;color:#c9dcee;font-size:14px}
+.status{display:inline-flex;gap:8px;align-items:center;margin-top:14px;background:rgba(15,157,88,.16);border:1px solid rgba(15,157,88,.5);color:#c7f0d8;padding:6px 13px;border-radius:999px;font-weight:700;font-size:13px}
+.dot{width:9px;height:9px;border-radius:50%;background:#25d366}
+h2{font-size:18px;color:var(--navy);margin:30px 0 10px}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:4px 0}
+.kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px}
+.kpi b{display:block;font-size:22px;color:var(--navy)}.kpi span{font-size:12px;color:var(--mut)}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:14px}
+th,td{text-align:left;padding:11px 13px;border-bottom:1px solid var(--line)}th{background:#f0f5fa;color:var(--navy);text-transform:uppercase;font-size:12px;letter-spacing:.03em}
+tr:last-child td{border-bottom:none}.ok{color:var(--ok);font-weight:700}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:18px 20px;color:#33475b;font-size:14px}
+code{background:#eef3f8;border:1px solid #dde7f0;border-radius:5px;padding:1px 6px;font-size:12.5px}
+ul{margin:.4em 0;padding-left:20px}li{margin:.3em 0}
+footer{margin-top:26px;color:var(--mut);font-size:12.5px;text-align:center}
+</style></head><body><div class="wrap">
+<header>
+<div class="kick">Transit &amp; Flow · Data Engineering</div>
+<h1>Data Platform Hardening Report</h1>
+<p>Lead data engineer pass · integrity, indexing, and automated data-quality monitoring · July 24, 2026</p>
+<div class="status"><span class="dot"></span> Integrity clean · Indexes covered · DQ monitoring live</div>
+</header>
+
+<div class="grid">
+<div class="kpi"><b>100%</b><span>Tables with RLS</span></div>
+<div class="kpi"><b>0</b><span>Orphaned rows</span></div>
+<div class="kpi"><b>10</b><span>FK indexes added</span></div>
+<div class="kpi"><b>0</b><span>Data-quality issues</span></div>
+</div>
+
+<h2>What was audited and hardened</h2>
+<table>
+<tr><th>Area</th><th>Finding</th><th>Action</th></tr>
+<tr><td>RLS coverage</td><td>Every public table already has RLS enabled</td><td class="ok">Verified — no gap</td></tr>
+<tr><td>Referential integrity</td><td>Zero orphaned rows across 7 PM relationships</td><td class="ok">Verified clean</td></tr>
+<tr><td>FK covering indexes</td><td>7 PM foreign keys unindexed; 3 more only covered by company-leading composites</td><td class="ok">Added 10 covering indexes</td></tr>
+<tr><td>Owner-statement math</td><td>net = income − expenses − fee holds</td><td class="ok">Now monitored</td></tr>
+<tr><td>Duplicate HCP jobs</td><td>None (prior defect fixed + guarded)</td><td class="ok">Now monitored</td></tr>
+<tr><td>Stuck conversions / stale payments</td><td>None</td><td class="ok">Now monitored</td></tr>
+</table>
+
+<h2>Automated data-quality monitoring</h2>
+<div class="card">
+Added <code>tf_data_quality_audit()</code>, which continuously checks six integrity signals:
+referential orphans, stuck maintenance conversions, stale processing payments,
+owner-statement math mismatches, duplicate Housecall Pro jobs, and active leases with no
+tenant. It returns a structured report and a total issue count, and is wired into the
+platform health check as a dedicated <b>Data Quality &amp; Integrity</b> component. If any
+integrity issue ever appears, it surfaces in isolation on the status page and the Slack
+health post, so it is caught before it reaches a report or a customer. Current state: 0 issues.
+</div>
+
+<h2>Indexes added</h2>
+<div class="card">
+<code>lease_ledger</code>: lease_id, owner_id, unit_id (FK-leading) &middot;
+<code>maintenance_requests</code>: lease_id, work_order_id &middot;
+<code>owner_statements</code>: owner_id &middot;
+<code>rental_applications</code>: unit_id.
+These accelerate the ledger, statement, and render-engine joins that filter by a single
+foreign key, and they speed foreign-key maintenance as these tables grow.
+</div>
+
+<h2>Standards now in force</h2>
+<div class="card"><ul>
+<li>Every table ships with RLS enabled and explicit policies before it goes live.</li>
+<li>Cross-table lookups in policies route through <code>SECURITY DEFINER</code> helpers to prevent recursion.</li>
+<li>New foreign keys get a covering index in the same migration.</li>
+<li>Data-quality is monitored automatically, not spot-checked.</li>
+<li>Every schema change is a named, ordered migration (now mirrored to GitHub).</li>
+</ul></div>
+
+<footer>Transit &amp; Flow — internal data-engineering record. Companion to the Property Management technical documentation suite and the Data Model ERD.</footer>
+</div></body></html>

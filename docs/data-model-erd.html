@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Transit & Flow — Property Management Data Model (ERD)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<style>
+  body{margin:0;background:#0b2440;color:#e9f1f8;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1100px;margin:0 auto;padding:28px 20px 60px}
+  h1{font-size:22px;margin:0 0 2px}.sub{color:#9fc2e0;font-size:13px;margin-bottom:18px}
+  .card{background:#0f2c50;border:1px solid #1c467a;border-radius:14px;padding:16px;overflow:auto}
+  .legend{color:#9fc2e0;font-size:12.5px;margin-top:14px;line-height:1.7}
+  code{background:#14335c;border:1px solid #1c467a;border-radius:5px;padding:1px 6px;font-size:12px}
+  .mermaid{background:#f6f9fc;border-radius:10px;padding:12px}
+</style></head>
+<body><div class="wrap">
+<h1>Transit &amp; Flow — Property Management Data Model</h1>
+<div class="sub">Entity relationships across the PM, payments, and documents domains, plus the closed-loop bridge into the field-service engine. Generated 2026-07-24.</div>
+<div class="card">
+<pre class="mermaid">
+erDiagram
+  AUTH_USERS ||--o| PROPERTY_OWNERS : "portal login (user_id)"
+  AUTH_USERS ||--o| LEASE_TENANTS  : "portal login (user_id)"
+  PROPERTY_OWNERS ||--o{ PROPERTY_UNITS : owns
+  PROPERTIES      ||--o{ PROPERTY_UNITS : contains
+  PROPERTY_UNITS  ||--o{ LEASES : "has"
+  LEASES          ||--o{ LEASE_TENANTS : houses
+  LEASES          ||--o{ LEASE_LEDGER : records
+  LEASES          ||--o{ RENT_PAYMENTS : "paid via"
+  PROPERTY_OWNERS ||--o{ OWNER_STATEMENTS : receives
+  PROPERTY_UNITS  ||--o{ MAINTENANCE_REQUESTS : "reported on"
+  LEASES          ||--o{ MAINTENANCE_REQUESTS : "under"
+  MAINTENANCE_REQUESTS ||--o| WORK_ORDERS : "bridges to"
+  WORK_ORDERS     }o--|| JOBS : "belongs to"
+  JOBS            }o--|| CUSTOMERS : "for"
+  PROPERTY_OWNERS ||--o| CUSTOMERS : "resolved as"
+  RENT_PAYMENTS   ||--o| LEASE_LEDGER : "posts payment"
+  DOCUMENT_TEMPLATES ||..|| DOCUMENT_SHORTCODES : "filled by"
+
+  PROPERTY_OWNERS { uuid id PK  uuid user_id FK  text status  numeric management_fee_pct }
+  PROPERTY_UNITS  { uuid id PK  uuid property_id FK  uuid owner_id FK  numeric market_rent }
+  LEASES          { uuid id PK  uuid unit_id FK  text status  numeric rent_amount }
+  LEASE_TENANTS   { uuid id PK  uuid lease_id FK  uuid user_id FK  bool is_primary }
+  LEASE_LEDGER    { uuid id PK  uuid lease_id FK  text txn_type  numeric amount  numeric running_balance }
+  OWNER_STATEMENTS{ uuid id PK  uuid owner_id FK  numeric net_to_owner  text status }
+  MAINTENANCE_REQUESTS { uuid id PK  uuid unit_id FK  uuid lease_id FK  uuid work_order_id FK  text status }
+  RENT_PAYMENTS   { uuid id PK  uuid lease_id FK  numeric amount  text status  text provider }
+  WORK_ORDERS     { uuid id PK  uuid job_id FK  text work_order_number  wo_status status }
+  DOCUMENT_TEMPLATES { uuid id PK  text key  text body }
+</pre>
+</div>
+<div class="legend">
+<b>The closed loop:</b> a tenant files a <code>MAINTENANCE_REQUEST</code> → owner or staff approves →
+a trigger creates a <code>JOB</code> + <code>WORK_ORDER</code> and links <code>work_order_id</code> back →
+completion and cost post to <code>LEASE_LEDGER</code> → income/expense roll up into
+<code>OWNER_STATEMENTS</code>. <code>RENT_PAYMENTS</code> settle via Stripe and post a
+payment row to the ledger.<br><br>
+<b>Isolation:</b> external users attach to <code>PROPERTY_OWNERS.user_id</code> or
+<code>LEASE_TENANTS.user_id</code>; every table is company-scoped with Row-Level Security.
+</div>
+</div>
+<script>mermaid.initialize({startOnLoad:true, theme:'default'});</script>
+</body></html>

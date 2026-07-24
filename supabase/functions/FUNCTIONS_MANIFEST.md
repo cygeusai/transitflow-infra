@@ -9,7 +9,7 @@ Two are included in full as reference (`tf-rent-pay`, `tf-stripe-webhook`); run
 | tf-rent-pay | true | Create Stripe Checkout for a tenant's rent balance (gated) |
 | tf-stripe-webhook | false | Settle payment + post ledger (signature-verified) |
 | tf-status | false | Branded system health status page |
-| qbo-sync / qbo-connect | false | QuickBooks OAuth + read-only finance sync |
+| qbo-sync / qbo-connect | false | QuickBooks OAuth + read-only finance sync (v2: graceful reauth, self-heal, 200-on-expiry) |
 | tf-omni-inbound / tf-omni-send | false | Omnichannel CX messaging |
 | tf-meta-webhook | false | Meta Messenger/Instagram webhook |
 | tf-clickup-worker | false | ClickUp application/FNOL worker |

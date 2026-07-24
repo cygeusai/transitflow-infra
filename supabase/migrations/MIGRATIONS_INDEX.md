@@ -48,6 +48,11 @@ of what exists so nothing is silently dropped.
 | 158 | 20260724000942 | document_template_render_engine |
 | 159 | 20260724001028 | document_templates_and_shortcodes_seed |
 | 160 | 20260724001129 | document_templates_seed_bodies |
+| 161 | 20260724064548 | tf_data_quality_audit |
+| 162 | 20260724115239 | security_autoharden_engine |
+| 163 | 20260724213447 | tf_system_health_qb_degraded_semantics |
+| 164 | 20260724220708 | integration_settings_dedup_and_health_hardening |
+| 165 | 20260724220737 | tf_integration_watchdog |
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

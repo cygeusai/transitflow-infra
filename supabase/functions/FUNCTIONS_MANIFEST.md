@@ -34,6 +34,13 @@ at the gateway with a 401 before the function ever runs. Always pass
 
 ## Connector self-observability
 
+Beyond the connectors, the platform watches the two systems that carry all of
+this: `tf_scheduler_health()` grades every pg_cron job for stall and failure, and
+`tf_queue_health()` grades `integration_events` across dead, stranded, skipped,
+discarded, and stuck-in-flight. Both are scored components of
+`tf_system_health()` (11 components total) and both auto-ticket hourly. See
+[`docs/SCHEDULER_AND_QUEUE_RELIABILITY.md`](../../docs/SCHEDULER_AND_QUEUE_RELIABILITY.md).
+
 Five connectors now self-report credential failures through one primitive,
 `tf_integration_health_report(provider, ok, error_code, http_status, message)`:
 QuickBooks (`qbo-sync`), ClickUp (`tf-clickup-worker`), Slack (`tf-slack`),

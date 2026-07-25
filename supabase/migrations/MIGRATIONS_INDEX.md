@@ -1,7 +1,8 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (190 migrations
-as of 2026-07-25). Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
+The full, ordered migration history of the Transit & Flow backend (208 migrations
+as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
+from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
 of what exists so nothing is silently dropped.
 
@@ -70,10 +71,26 @@ of what exists so nothing is silently dropped.
 | 184 | 20260725005005 | integration_provider_add_slack |
 | 185 | 20260725005013 | slack_integration_settings_seed |
 | 186 | 20260725005101 | tf_system_health_slack_error_awareness |
-| 187 | 20260725005724 | cygeus_0007_governance_enforcement_and_loop_rpcs |
-| 188 | 20260725010016 | tf_integration_health_report_immediate_ticket |
-| 189 | 20260725010055 | tf_request_ticket_null_safe_list |
-| 190 | 20260725010111 | tf_integration_health_report_immediate_ticket_v2 |
+| 189 | 20260725005724 | cygeus_0007_governance_enforcement_and_loop_rpcs |
+| 190 | 20260725010016 | tf_integration_health_report_immediate_ticket |
+| 191 | 20260725010055 | tf_request_ticket_null_safe_list |
+| 192 | 20260725010111 | tf_integration_health_report_immediate_ticket_v2 |
+| 193 | 20260725010359 | cygeus_0008_ui_read_views |
+| 194 | 20260725010432 | tf_scheduler_health |
+| 195 | 20260725010736 | cygeus_0009_v_approvals_add_agent_workflow_ids |
+| 196 | 20260725010740 | tf_scheduler_health_null_safe_flags |
+| 197 | 20260725010758 | tf_queue_health |
+| 198 | 20260725010846 | tf_queue_health_v2_platform_wide_stranded_and_skipped |
+| 199 | 20260725010923 | tf_queue_requeue_and_discard |
+| 200 | 20260725010948 | tf_queue_requeue_partial_apply |
+| 201 | 20260725011052 | tf_system_health_add_scheduler_and_queue_components |
+| 202 | 20260725011132 | tf_queue_health_v3_backlog_age_from_eligibility |
+| 203 | 20260725011140 | cygeus_0010_ai_budgets_and_redaction |
+| 204 | 20260725011205 | cygeus_0011_fix_redact_array_concat |
+| 205 | 20260725011206 | tf_reliability_autoticket_scheduler_and_queue |
+| 206 | 20260725011303 | integration_event_status_add_discarded |
+| 207 | 20260725011335 | tf_queue_discard_v2_and_health_v4_terminal_states |
+| 208 | 20260725011834 | tf_scheduler_health_v2_first_seen_grace_and_thresholds |
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

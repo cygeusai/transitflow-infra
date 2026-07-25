@@ -41,6 +41,13 @@ recovery (DB fn)  ->  tf_resolve_ticket -> ops_ticket_close event -> worker post
   `tf-governance-autoticket-daily` at 14:05 UTC): opens a ticket for any control
   that drops to **failing**; closes it when the control recovers. Deduped by
   `control:<control_key>`.
+- **Reliability sweep** (`tf_reliability_autoticket`, hourly cron
+  `tf-reliability-autoticket-hourly` at `:50`): opens `reliability:scheduler`
+  when a pg_cron job stalls or fails, and `reliability:queue` when integration
+  events are dead, stranded, skipped, or stuck in flight. Both auto-resolve the
+  moment the condition clears. Full design, the five failure classes, and the
+  five defects found by driving it against live data are in
+  [`SCHEDULER_AND_QUEUE_RELIABILITY.md`](./SCHEDULER_AND_QUEUE_RELIABILITY.md).
 
 ## Cadence
 
@@ -49,6 +56,7 @@ recovery (DB fn)  ->  tf_resolve_ticket -> ops_ticket_close event -> worker post
 | `tf-clickup-worker-hourly` | drains the queue every hour (:25) |
 | `tf-governance-autoticket-daily` | `5 14 * * *` |
 | `tf-integration-watchdog-daily` | `15 13 * * *` |
+| `tf-reliability-autoticket-hourly` | `50 * * * *` |
 
 ## Security
 

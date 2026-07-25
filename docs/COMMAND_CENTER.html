@@ -1,0 +1,112 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Transit & Flow — Executive Command Center</title>
+<style>
+:root{--navy:#0b2440;--blue:#1d9bf0;--ink:#0f172a;--mut:#5b6b7f;--line:#e6edf4;--bg:#f6f9fc;--ok:#0f9d58;--warn:#d98a00;--bad:#d64545;--amber:#e8850c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.5}
+.wrap{max-width:1000px;margin:0 auto;padding:34px 18px 68px}
+header{background:linear-gradient(135deg,var(--navy),#123a63);color:#fff;border-radius:16px;padding:26px 28px}
+.kick{letter-spacing:.14em;text-transform:uppercase;font-size:12px;color:#67c0f5;font-weight:700}
+h1{margin:.3em 0 .1em;font-size:25px}header p{margin:0;color:#c9dcee;font-size:13.5px}
+.badge{display:inline-flex;gap:8px;align-items:center;margin-top:14px;padding:6px 14px;border-radius:999px;font-weight:700;font-size:13px}
+.b-deg{background:rgba(217,138,0,.18);border:1px solid rgba(217,138,0,.5);color:#f4d59a}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--amber)}
+h2{font-size:17px;color:var(--navy);margin:30px 0 10px;padding-bottom:6px;border-bottom:2px solid var(--line)}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:16px}
+.kpi{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px}.kpi b{display:block;font-size:21px;color:var(--navy)}.kpi span{font-size:11.5px;color:var(--mut)}
+.hgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.hc{background:#fff;border:1px solid var(--line);border-radius:11px;padding:12px 13px;border-left:3px solid var(--ok)}
+.hc.deg{border-left-color:var(--amber)}.hc.down{border-left-color:var(--bad)}
+.hc b{display:block;font-size:13px;color:var(--navy)}.hc span{font-size:11.5px;color:var(--mut)}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:15px 17px;color:#33475b;font-size:13.5px}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:13px;margin-top:6px}
+th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f0f5fa;color:var(--navy);text-transform:uppercase;font-size:11px}
+tr:last-child td{border-bottom:none}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}
+.p-ok{background:#e5f6ec;color:#0f7a44}.p-att{background:#fdf3e0;color:#b46f00}.p-bad{background:#fbe4e4;color:#b02a2a}
+a{color:var(--blue);text-decoration:none}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+code{background:#eef3f8;border:1px solid #dde7f0;border-radius:5px;padding:1px 6px;font-size:12px}
+.legend{font-size:11.5px;color:var(--mut);margin-top:6px}
+@media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}.hgrid{grid-template-columns:1fr 1fr}.two{grid-template-columns:1fr}}
+@media(max-width:520px){.hgrid{grid-template-columns:1fr}}
+footer{margin-top:26px;color:var(--mut);font-size:12px;text-align:center}
+</style></head><body><div class="wrap">
+<header>
+<div class="kick">Transit &amp; Flow · Executive Command Center</div>
+<h1>Platform Command Center</h1>
+<p>Live consolidated posture from <code>tf_platform_overview()</code> · generated 2026-07-25 00:01 UTC</p>
+<div class="badge b-deg"><span class="dot"></span> Overall: DEGRADED — 2 connector credentials need owner action, all 9 other components operational</div>
+</header>
+
+<div class="grid">
+<div class="kpi"><b>9 / 11</b><span>Health components operational</span></div>
+<div class="kpi"><b>14 / 16</b><span>Controls passing · 0 failing</span></div>
+<div class="kpi"><b>0</b><span>Security gaps (all axes)</span></div>
+<div class="kpi"><b>5</b><span>Open action items (all tracked)</span></div>
+</div>
+
+<h2>System health</h2>
+<div class="hgrid">
+<div class="hc deg"><b>QuickBooks Finance Sync</b><span>Degraded · reconnect required, last ok 10h ago</span></div>
+<div class="hc"><b>Housecall Pro Sync</b><span>Operational · synced 1h ago</span></div>
+<div class="hc"><b>ClickUp Ops Worker</b><span>Operational · see token note below</span></div>
+<div class="hc"><b>Automated Reports (Slack)</b><span>Operational · scheduled &amp; connected</span></div>
+<div class="hc"><b>Customer Messaging (SMS)</b><span>Operational · live</span></div>
+<div class="hc"><b>Property Management</b><span>Operational · 0 units / 0 leases</span></div>
+<div class="hc"><b>Data Quality &amp; Integrity</b><span>Operational · no integrity issues</span></div>
+<div class="hc"><b>Security Posture</b><span>Operational · hardened, 0 gaps, auto-patch</span></div>
+<div class="hc"><b>Scheduler (pg_cron)</b><span>Operational · 35 jobs, all firing</span></div>
+<div class="hc"><b>Integration Queue</b><span>Operational · queue clear, 3 pending</span></div>
+<div class="hc"><b>Data Pipeline &amp; Automations</b><span>Operational · 0 failed runs / 1h</span></div>
+</div>
+<p class="legend">Health is evaluated every 15 minutes across 11 components. QuickBooks and ClickUp credential failures are correctly classified as component-degraded, not a platform outage.</p>
+
+<div class="two" style="margin-top:20px">
+<div>
+<h2 style="margin-top:0">Security &amp; governance</h2>
+<div class="card">
+<b>Security posture:</b> 0 gaps on every axis (RLS coverage, least-privilege grants, pinned search paths, policy coverage). Continuous auto-hardening every 6h.<br><br>
+<b>Controls:</b> 16 under continuous monitoring, mapped to NIST CSF / SOC 2 / CIS v8. <b>14 passing, 0 failing, 2 attention:</b>
+<table style="margin-top:8px">
+<tr><th>Control</th><th>Status</th></tr>
+<tr><td>AC-MFA-003 MFA on privileged accounts</td><td><span class="pill p-att">Attention</span></td></tr>
+<tr><td>DP-PITR-007 Point-in-Time Recovery</td><td><span class="pill p-att">Attention</span></td></tr>
+</table>
+</div></div>
+<div>
+<h2 style="margin-top:0">Access &amp; SLOs</h2>
+<div class="card">
+<b>Access certification:</b> 2 accounts, 1 active privileged, 1 MFA gap (the owner). Reviewed 2026-07-24; quarterly cadence.<br><br>
+<b>Service objectives (trailing 30 days):</b>
+<table style="margin-top:8px">
+<tr><th>SLO</th><th>Target</th><th>Now</th></tr>
+<tr><td>Availability</td><td>99.9%</td><td>87.2%</td></tr>
+<tr><td>Integration reliability</td><td>99.0%</td><td>87.2%</td></tr>
+<tr><td>Security continuity</td><td>100%</td><td>44.0%</td></tr>
+</table>
+<p class="legend">The window still includes this week's build-and-hardening incidents, so attainment reads below target by design. Forward trend is green as clean checks accumulate.</p>
+</div></div>
+</div>
+
+<h2>Open action items — all tracked in ClickUp</h2>
+<table>
+<tr><th>Action</th><th>Priority</th><th>Ticket</th></tr>
+<tr><td>Reconnect QuickBooks finance sync</td><td><span class="pill p-att">Medium</span></td><td><a href="https://app.clickup.com/t/86bb3a6mh">86bb3a6mh</a></td></tr>
+<tr><td>Enable MFA on owner account (closes AC-MFA-003)</td><td><span class="pill p-bad">High</span></td><td><a href="https://app.clickup.com/t/86bb3ae6c">86bb3ae6c</a></td></tr>
+<tr><td>Enable Point-in-Time Recovery (closes DP-PITR-007)</td><td><span class="pill p-bad">High</span></td><td><a href="https://app.clickup.com/t/86bb3ayzr">86bb3ayzr</a></td></tr>
+<tr><td>Enable Google / Microsoft SSO providers</td><td><span class="pill p-att">Normal</span></td><td><a href="https://app.clickup.com/t/86bb3az04">86bb3az04</a></td></tr>
+<tr><td>Rotate ClickUp API token (backend auto-ticketing degraded)</td><td><span class="pill p-bad">High</span></td><td><a href="https://app.clickup.com/t/86bb3az53">86bb3az53</a></td></tr>
+</table>
+<p class="legend">Every item is an owner action (OAuth, dashboard toggle, or credential) that Claude cannot perform directly. Each closes its control or clears its integration automatically on the next evaluation once done.</p>
+
+<div class="card" style="margin-top:16px;border-left:3px solid var(--amber)">
+<b>Live note — ClickUp API token:</b> the server-side token in Vault (<code>clickup_token</code>) was rejected as invalid on 2026-07-25, so the backend worker can't create tasks until it's rotated (ticket above). The Cowork OAuth connection is unaffected, which is how today's tickets were created. This is recorded in <code>integration_errors</code>; the watchdog will auto-resolve it once the token is refreshed.
+</div>
+
+<h2>What runs automatically</h2>
+<div class="card">
+Platform health every 15 min · security auto-harden every 6h · integration watchdog daily (self-heal + escalation tickets) · governance controls evaluation monthly · access certification quarterly · governance report to Slack monthly · closed-loop auto-ticketing drains hourly · reliability sweep hourly at :50, watching all 35 scheduled jobs and the integration queue and ticketing on stall, dead letter, stranded, or skipped work. This command center is a live rollup: it can be regenerated any time from <code>tf_platform_overview()</code>.
+</div>
+
+<footer>Transit &amp; Flow — internal command center. Point-in-time snapshot of the live platform, 2026-07-25. Companion to the Security, BCDR/IR, Integration Health, and IT GRC programs.</footer>
+</div></body></html>

@@ -1,0 +1,97 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Transit & Flow — Operations & On-Call Runbook</title>
+<style>
+:root{--navy:#0b2440;--blue:#1d9bf0;--ink:#0f172a;--mut:#5b6b7f;--line:#e6edf4;--bg:#f6f9fc;--ok:#0f9d58;--warn:#d98a00;--bad:#d64545;--amber:#e8850c}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;line-height:1.5}
+.wrap{max-width:980px;margin:0 auto;padding:34px 18px 68px}
+header{background:linear-gradient(135deg,var(--navy),#123a63);color:#fff;border-radius:16px;padding:26px 28px}
+.kick{letter-spacing:.14em;text-transform:uppercase;font-size:12px;color:#67c0f5;font-weight:700}
+h1{margin:.3em 0 .1em;font-size:25px}header p{margin:0;color:#c9dcee;font-size:13.5px}
+h2{font-size:17px;color:var(--navy);margin:30px 0 10px;padding-bottom:6px;border-bottom:2px solid var(--line)}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:12px;overflow:hidden;font-size:13px;margin-top:6px}
+th,td{text-align:left;padding:9px 11px;border-bottom:1px solid var(--line);vertical-align:top}th{background:#f0f5fa;color:var(--navy);text-transform:uppercase;font-size:11px}
+tr:last-child td{border-bottom:none}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:15px 17px;color:#33475b;font-size:13.5px}
+code{background:#eef3f8;border:1px solid #dde7f0;border-radius:5px;padding:1px 6px;font-size:12px}
+ol{margin:.4em 0;padding-left:20px}li{margin:.35em 0}ul{margin:.3em 0;padding-left:20px}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700}
+.p-ok{background:#e5f6ec;color:#0f7a44}.p-att{background:#fdf3e0;color:#b46f00}.p-bad{background:#fbe4e4;color:#b02a2a}
+footer{margin-top:26px;color:var(--mut);font-size:12px;text-align:center}
+.legend{font-size:11.5px;color:var(--mut);margin-top:6px}
+</style></head><body><div class="wrap">
+<header>
+<div class="kick">Transit &amp; Flow · Operations</div>
+<h1>Operations &amp; On-Call Runbook</h1>
+<p>What every automated system does, what its signal means, and exactly what to do when it fires · July 25, 2026</p>
+</header>
+
+<h2>First 15 minutes when something looks wrong</h2>
+<div class="card"><ol>
+<li>Open the live status page: <code>/functions/v1/tf-status</code>. It shows every component and true availability, refreshing each minute.</li>
+<li>Check Slack for the latest <b>System Health</b> and <b>Integration Watchdog</b> posts. They name the exact component, error, and remediation.</li>
+<li>Open ClickUp Roadmap &amp; Ops. Every issue needing a human is a tracked ticket with the fix written in it.</li>
+<li>Match the signal to the response table below and act. Most conditions self-heal; your job is the credential and dashboard actions the platform cannot do itself.</li>
+</ol></div>
+
+<h2>What runs automatically</h2>
+<table>
+<tr><th>System</th><th>Cadence</th><th>What it does</th></tr>
+<tr><td>Platform health monitor</td><td>Every 15 min</td><td>Scores 11 components; posts a daily Slack summary; feeds the status page.</td></tr>
+<tr><td>Scheduler watch</td><td>Every health check</td><td>Grades all 35 pg_cron jobs for stall and failure. A new job gets one grace window before it can be called stalled; coarse schedules (daily and rarer) are exempt.</td></tr>
+<tr><td>Integration queue watch</td><td>Every health check</td><td>Grades queued work across five states: dead, stranded, skipped, discarded, stuck in flight. Platform-wide, so orphaned rows in any tenant stay visible.</td></tr>
+<tr><td>Reliability auto-ticket</td><td>Hourly (:50)</td><td>Opens a ticket when the scheduler stalls or the queue breaks; closes it automatically the moment the condition clears.</td></tr>
+<tr><td>Security auto-harden</td><td>Every 6 hours</td><td>Revokes privilege drift on SECURITY DEFINER functions; logs to security_events.</td></tr>
+<tr><td>Integration watchdog</td><td>Daily 13:15 UTC</td><td>Self-heals recovered connectors; escalates transient errors by age, opening tickets at 72h. Credential failures do not wait, they ticket on first detection.</td></tr>
+<tr><td>Controls evaluation</td><td>Monthly</td><td>Re-scores 16 governance controls from live signals.</td></tr>
+<tr><td>Access certification</td><td>Quarterly</td><td>Snapshots accounts, roles, MFA; flags gaps.</td></tr>
+<tr><td>Governance auto-ticket</td><td>Daily 14:05 UTC</td><td>Opens a ticket for any failing control; closes it on recovery.</td></tr>
+<tr><td>Auto-ticket worker</td><td>Hourly</td><td>Drains the ticket queue into ClickUp; posts resolution comments.</td></tr>
+<tr><td>Finance sync (QuickBooks)</td><td>Every 2 hours</td><td>Read-only AR/invoice sync; degrades gracefully on token expiry.</td></tr>
+<tr><td>Connector self-report</td><td>Every worker call</td><td>QuickBooks, ClickUp, Slack, Twilio/Meta, Housecall Pro each report auth failures through <code>tf_integration_health_report</code> and self-heal on the next success.</td></tr>
+</table>
+<p class="legend">Auth-class vs config-class matters: only a credential rejection degrades a connector. A Slack channel-not-found, an invalid SMS destination, or a 404 on one record is a configuration or data problem and is deliberately excluded, so the status page never cries wolf.</p>
+
+<h2>Signal → response</h2>
+<table>
+<tr><th>Signal</th><th>Meaning</th><th>Response</th></tr>
+<tr><td><span class="pill p-att">Health: degraded</span></td><td>A non-critical component needs attention; platform is available.</td><td>Read the component detail. If it names a connector reauth, action the matching ticket. No emergency.</td></tr>
+<tr><td><span class="pill p-bad">Health: outage</span></td><td>A critical path is down (e.g., data pipeline failing, PM conversions stuck).</td><td>Treat as incident: open the IR plan, identify the down component, follow its playbook, communicate status.</td></tr>
+<tr><td><span class="pill p-att">Watchdog: escalation</span></td><td>An integration error has persisted past 72h; a ticket was auto-opened.</td><td>Action the ticket. The connector self-clears once the credential is fixed.</td></tr>
+<tr><td><span class="pill p-bad">Control: failing</span></td><td>A governance control dropped below standard; urgent ticket auto-opened.</td><td>Open the ticket; the fix and framework mapping are in it. Control auto-passes on next evaluation once remediated.</td></tr>
+<tr><td><span class="pill p-bad">Security: gap &gt; 0</span></td><td>A new privilege drift or RLS gap appeared.</td><td>Auto-harden runs every 6h and usually closes it. If it persists, inspect <code>security_events</code> and <code>tf_security_scan()</code>.</td></tr>
+<tr><td><span class="pill p-att">Data quality: issue</span></td><td>An integrity check found orphans or math drift.</td><td>Run <code>tf_data_quality_audit()</code> for detail; fix the flagged records.</td></tr>
+<tr><td><span class="pill p-bad">Scheduler: job stalled</span></td><td>A pg_cron job has not fired in 3× its cadence. One stalled job is a degradation; 3+ is a scheduler-wide outage.</td><td>Run <code>tf_scheduler_health()</code> and read the named job. A ticket is already open. If the job is obsolete, unschedule it; the registry cleans itself up.</td></tr>
+<tr><td><span class="pill p-att">Queue: stranded / skipped</span></td><td>Integration work is stuck. <b>Stranded</b> still has retry budget but nothing is retrying it. <b>Skipped</b> was dropped by the worker with no retry path.</td><td>Inspect with <code>tf_queue_health()</code>. Replay with <code>tf_queue_requeue('stranded')</code>, or retire with <code>tf_queue_discard()</code>. Requeue automatically holds back any provider whose credential is currently rejected.</td></tr>
+<tr><td><span class="pill p-att">Connector: reauth_required</span></td><td>An API token expired or was revoked.</td><td>Rotate/reconnect the credential (owner action). A priority-2 ticket is opened on first detection, not after 72h, because this failure never recovers on its own. The worker self-heals and closes the ticket on the next successful call.</td></tr>
+</table>
+
+<h2>What fixes itself (do not intervene)</h2>
+<div class="card"><ul>
+<li><b>Recovered connectors:</b> the watchdog and the integration primitive resolve the error, flip status to connected, and close the ticket automatically once a credential works again. All five connectors (QuickBooks, ClickUp, Slack, Twilio/Meta, Housecall Pro) report through the same primitive, so none can fail authentication while its health component stays green.</li>
+<li><b>Privilege drift:</b> auto-harden revokes anon/public execute on new SECURITY DEFINER functions every 6 hours.</li>
+<li><b>Finance token expiry:</b> QuickBooks sync degrades cleanly and resumes on reconnect, resolving its own error.</li>
+<li><b>Duplicate tickets:</b> the registry de-duplicates, so a standing issue never files twice.</li>
+<li><b>Transient job failures:</b> a single <code>job startup timeout</code> in 24h is graded flaky, not failing, and does not ticket. Escalation needs 2+ failures or a currently-failed last run, so worker contention never trains you to ignore the signal.</li>
+<li><b>Newly scheduled jobs:</b> a job created minutes ago has no run history. It is graded <i>awaiting first run</i>, not stalled, until one full cadence window has passed.</li>
+<li><b>Queue backoff:</b> retryable events with budget remaining are left alone. Only work with nothing retrying it (stranded) or nowhere to go (dead, skipped) reaches you.</li>
+</ul></div>
+
+<h2>Owner-action playbook (the 5 things only you can do)</h2>
+<table>
+<tr><th>#</th><th>Action</th><th>Exact steps</th></tr>
+<tr><td>1</td><td>Reconnect QuickBooks</td><td>Integration Settings → QuickBooks → reconnect via OAuth. Sync resumes in ≤2h.</td></tr>
+<tr><td>2</td><td>Enable MFA on owner account</td><td>Account security → enroll an authenticator (TOTP) for micheal.parker@goqtf.com. Closes AC-MFA-003.</td></tr>
+<tr><td>3</td><td>Enable Point-in-Time Recovery</td><td>Supabase Dashboard → Database → Backups → enable PITR (7-day retention). Closes DP-PITR-007.</td></tr>
+<tr><td>4</td><td>Enable Google / Microsoft SSO</td><td>Register OAuth apps with redirect <code>…/auth/v1/callback</code>; enable providers in Supabase Auth.</td></tr>
+<tr><td>5</td><td>Rotate ClickUp API token</td><td>ClickUp Settings → Apps → new token; update Vault secret <code>clickup_token</code>. Worker self-heals.</td></tr>
+</table>
+<p class="legend">Each of these is a tracked ClickUp ticket. Completing it auto-clears its control or connector on the next evaluation, no engineering follow-up.</p>
+
+<h2>Reference — key objects</h2>
+<div class="card">
+Live overview: <code>tf_platform_overview()</code> · health: <code>tf_system_health()</code> · security: <code>tf_security_scan()</code> / <code>tf_security_autoharden()</code> · watchdog: <code>tf_integration_watchdog()</code> · controls: <code>tf_controls_evaluate()</code> · access: <code>tf_access_review()</code> · SLOs: <code>tf_slo_report()</code> · tickets: <code>tf_request_ticket()</code> / <code>tf_resolve_ticket()</code> · connector health: <code>tf_integration_health_report()</code>.<br><br>
+<b>Reliability:</b> scheduler: <code>tf_scheduler_health()</code> · queue: <code>tf_queue_health()</code> · replay: <code>tf_queue_requeue('stranded'|'dead'|'skipped'|'all')</code> · retire: <code>tf_queue_discard(p_scope := 'dead', p_reason := '…')</code> · sweep: <code>tf_reliability_autoticket()</code>. Design notes: <code>docs/SCHEDULER_AND_QUEUE_RELIABILITY.md</code>. Source of truth: GitHub <code>cygeusai/transitflow-infra</code>.
+</div>
+
+<footer>Transit &amp; Flow — internal operations runbook. Companion to the BCDR/IR, Security, Integration Health, and IT GRC programs. Generated 2026-07-25.</footer>
+</div></body></html>

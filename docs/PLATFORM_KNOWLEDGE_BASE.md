@@ -4,7 +4,7 @@ The single troubleshooting reference for the Transit & Flow backend. Written to
 be read at 2am by someone who did not build it.
 
 State captured 2026-07-25 against Supabase project `kjooyhvynkzuvsixsutt` at
-migration 267. Every number in this document was read out of the live database,
+migration 269. Every number in this document was read out of the live database,
 not remembered.
 
 ---
@@ -186,6 +186,10 @@ Routed by what you observe. Each row names the check to run first.
 | `AC-DEFN-017` and `AC-GUARDREG-023` fail together, naming the same function | A real unguarded definer function reachable by `authenticated` | read the body, add a guard or an approved `security_scan_exemptions` row |
 | `tf_guard_pattern: tf_guard_predicate_registry is empty` | Somebody truncated the guard registry | reseed from migration 253; the raise is deliberate, a null pattern would pass everything |
 | Three security controls read `attention` at once and evidence shows `?` | `tf_security_scan()` raised, so its signals propagate null | call `tf_security_scan()` directly and read the actual error |
+| `CM-FNDRIFT-018` reads `attention` with no evidence string | since migration 269 the evaluator honours a checker's `ok: false` instead of coalescing it to zero, so this means the audit refused | `select public.tf_function_safety_audit();` → read `error` and `missing_signals`; see `FUNCTION_SAFETY_AUDIT.md` |
+| `tf_function_safety_audit()` returns `error: pattern_table_empty` | one or more of the five signal classes has no rows in `tf_function_safety_patterns` | `missing_signals` names exactly which; reseed that class, never a placeholder regex |
+| `secret_touchers` dropped from 18 to 1 between readings | the `vault_read` pattern rows were deleted; `body ~* null` is null, not false, so every function reads as not touching the Vault | `select count(*) from tf_function_safety_patterns where signal='vault_read'`, expect 3. Since migration 268 the audit refuses instead of reporting this |
+| A control reads `passing` while its checker plainly cannot run | the deployed `tf_controls_evaluate` predates migration 269 and reads past the `ok` flag | count occurrences of `->>'ok','false'` in `pg_get_functiondef`; it must appear six times |
 
 ---
 
@@ -614,7 +618,7 @@ event, because the next operator has no way to know whether it was safe.
 
 ## Conventions register
 
-Twenty-five conventions. Repeatedly, the highest-yield defect on this platform has been two writers
+Twenty-six conventions. Repeatedly, the highest-yield defect on this platform has been two writers
 each holding a different convention, both correct in isolation, silently
 disagreeing at the seam. Every one of these is now enforced somewhere the
 disagreement becomes an error at write time rather than a discrepancy at read
@@ -647,6 +651,7 @@ time.
 | 23 | A checker must refuse on an empty population, not certify one | zero inputs is a failed measurement, and the checker raises rather than dividing into a denominator of nothing and reporting 100 percent | `tf_grant_tier_audit` empty-population raise, migration 263; `tf_controls_evaluate` propagates null, so the control reads `attention` rather than `passing` |
 | 24 | Prove by inducing the failure; where the live object cannot be broken, prove on a derived clone and say so | build the clone from the live catalog text by asserted mechanical substitutions, name it outside the population being measured so the proof does not perturb itself, assert every substitution landed and that the branch under test survived, drop it, then label the proof as weaker than an induced one **in writing** | migration 263's `zz__granttier_refusal_clone()`, labelled in `FUNCTION_GRANT_TIERS.md` as the weakest of the three proofs in that document |
 | 25 | An exclusion lever must be visible in the number it shrinks, and a stale exclusion is a violation | a checker that supports exclusions publishes the full population, the excluded count and the excluded names, asserts the partition `population = measured + excluded` in its own body, and treats an exclusion naming nothing real as a violation rather than a curiosity | `tf_guard_detection_audit` `reachable_total` / `exempted_total` / `exempted_fns` / `stale_exemption_total`, gating since migration 265, surfaced on `AC-GUARDREG-023` since migration 267, proved by a planted stale exemption |
+| 26 | A refusal must cover every input the checker reads, and every consumer of a refusal must listen to it | a checker's completeness guard names all of its own inputs and says which are missing; on the consuming side, a payload carrying `ok: false` becomes null, never zero, so the control reads `attention` rather than `passing` | `tf_function_safety_audit` `missing_signals` across all five signal classes since migration 268; all six consumers in `tf_controls_evaluate` gated on `coalesce(payload->>'ok','false') <> 'true'` since migration 269, verified by a count of the idiom in the patched body |
 
 The countermeasure that keeps working is the same every time: express the
 convention in the database, on the *normalised* form of the value, so violation
@@ -993,11 +998,55 @@ fix for the Supabase half. Always
 Migration 260's first attempt failed on this, caught by its own fixture-setup
 assertion, which is the harness working exactly as intended.
 
+**The null that is not false.** `tf_function_safety_audit` classifies each
+function by matching its body against patterns pulled out of a table, one regex
+per signal class, in expressions of the form `body ~* v_vr`. If the table has no
+row for that class the variable is null, and in SQL `anything ~* null` is
+**null**, not false. The surrounding boolean collapses it to false and the
+classification proceeds, confidently, on a signal that has been switched off.
+
+This is what makes it a distinct pattern rather than an instance of the empty-
+input problem. An empty *population* is loud, the counters go to zero and
+somebody notices. An empty *rule set for one signal* is silent, because every
+other signal still fires and the payload still looks fully populated. Deleting
+the three `vault_read` rows left 84 functions classified, 55 writers, zero drift,
+`ok: true`, and `secret_touchers` down from 18 to 1. The one number that moved is
+the one nothing gates on.
+
+Wherever a checker reads its rules from a table, the enumeration of expected rule
+classes belongs in the checker's own refusal guard, and the refusal must say
+which class is missing. Grep any checker for `~* v_` and count the variables;
+every one of them must appear in the null-check above it. See
+`FUNCTION_SAFETY_AUDIT.md`.
+
+**The refusal with no listener.** The consumer-side twin, and the broadest defect
+found so far. A checker returns `{"ok": false, ...}` and the caller reads
+`coalesce((payload->>'some_total')::int, 0)`. The key is absent because the
+checker refused, the coalesce supplies zero, and zero is the value that means
+healthy. Five of six control consumers in `tf_controls_evaluate` did exactly
+this. Four of the five checkers involved can *only* refuse by return value, so
+there was no raise for the evaluator's exception handler to catch either.
+
+The tell is easy to grep for and easy to miss by eye: any `coalesce(x->>'k', 0)`
+where `x` is a payload that also carries an `ok` key. The fix is to null the
+whole quantity on refusal rather than defaulting the counter, so that the
+already-existing `null → attention` path carries it to the board:
+
+```sql
+v_x := case when v_xj is null or coalesce(v_xj->>'ok','false') <> 'true' then null
+            else coalesce((v_xj->>'violation_total')::int,0) end;
+```
+
+Note the order inside the `case`. Defaulting the *flag* to `'false'` means a
+payload that has lost its `ok` key entirely is treated as a refusal, not as a
+pass. Defaulting the *counter* is only safe once the flag has already been
+honoured.
+
 ---
 
 ## The house rules
 
-Twelve rules, each of which exists because breaking it cost real time.
+Thirteen rules, each of which exists because breaking it cost real time.
 
 **A migration that creates or replaces a function must drive that function in a
 post-check, not inspect it.** Migration 229 in this repo's ordinal series applied
@@ -1125,6 +1174,37 @@ an auditor reads it. Ask of every checker that supports an exclusion list: **if
 somebody excludes everything, what does this say?** and **can a reader tell an
 excused function from a deleted one?** A denominator with an undisclosed lever
 attached is not a measurement, it is a dial.
+
+**A refusal is only real if every consumer listens to it, and a refusal that
+omits one of its own inputs is not a refusal.** The thirteenth rule came from
+turning the eleventh on a third checker and finding that the previous two passes
+had been building something nobody downstream was reading. It has two halves and
+they were found one after the other.
+
+The first half is inside `tf_function_safety_audit`. It already had a
+completeness guard on its pattern table, and the guard checked four of the five
+signal classes it reads. The missing one was `vault_read`, and the reason the gap
+was invisible is a Postgres detail worth memorising: `anything ~* null` evaluates
+to **null**, not false. Deleting three rows from a table therefore made every
+function on the platform read as not touching the Vault, collapsed
+`secret_touchers` from 18 entries to 1, and returned `ok: true` while doing it.
+A guard that enumerates its inputs and misses one is not a partial guard, it is a
+blind spot that has been given a reassuring name.
+
+The second half is worse and it is general. Six checkers feed
+`tf_controls_evaluate` and all six can return `ok: false`. Exactly one consumer
+read the flag, the one written after migration 265. The other five read straight
+past it to the counter they wanted, and because every counter is pulled with
+`coalesce(..., 0)`, a checker that had refused arrived as a clean zero, and zero
+maps to `passing`. Four of those five can only refuse by return value, never by
+raise, so for them the refusal channel was completely unheard. Every refusal
+migrations 262, 263, 265, 266 and 268 taught a checker to emit was landing in a
+consumer that could not tell refusal from cleanliness. Migration 269 gave all six
+the same null-on-refusal shape.
+
+The question this rule adds to the other two: **who reads this, and what do they
+do when it says no?** Building a refusal is half the work. A refusal with no
+listener is an unhandled exception with better manners.
 
 ---
 
@@ -1437,6 +1517,32 @@ underlying measurement could not run, rather than `passing` on a substituted
 zero. If several security controls go to `attention` at once, call the audit
 function directly and read the real error.
 
+Since migration 269 the same is true of a checker that refuses **by return
+value** rather than by raising. All six checker consumers now null out on
+`coalesce(payload->>'ok','false') <> 'true'` before summing, so a refusal reaches
+the board as `attention`. Before 269 only `AC-GUARDREG-023` did this; the other
+five read past the flag into a `coalesce(..., 0)` and rendered `passing` over a
+checker that had declined to answer. Four of the six checkers involved can only
+refuse by return, never by raise, which is why the exception handler above was
+not sufficient on its own.
+
+### One published metric that deliberately gates nothing
+
+`tf_function_safety_audit().misleading_total` reads **7** and no control consumes
+it. The seven are `tf_access_review`, `tf_controls_evaluate`,
+`tf_integration_health_report`, `tf_it_governance_report`, `tf_ops_report`,
+`tf_scheduler_health` and `tf_system_health`, each a report or evaluator whose
+name implies a read and which legitimately persists what it computed.
+
+The decision recorded at migration 269 is to publish and not gate, because making
+it gate flips `CM-FNDRIFT-018` to `failing` over seven pre-existing naming
+choices and trains operators to read a failing control as noise. House rule
+eleven requires that an ungating metric be either promoted or explained; this one
+is explained, and it is listed here so the decision is revisited rather than
+forgotten. The alternative under consideration is a rename pass with a
+compatibility shim, which is a larger change than it looks because every one of
+the seven is called from cron.
+
 ---
 
 ## Revenue and attribution
@@ -1483,7 +1589,7 @@ Read live from the catalog, not counted by hand.
 
 | | Count |
 | --- | --- |
-| Migrations applied | 267 |
+| Migrations applied | 269 |
 | Base tables in `public` | 171 |
 | Tables with RLS enabled | 171 (100%) |
 | RLS policies | 582 |
@@ -1618,7 +1724,8 @@ subject-specific notes beside it in `docs/`:
 - `FUNCTION_GRANT_TIERS.md` — the three-tier grant model, the Supabase default-privileges trap, `CM-GRANT-021`, the coverage defect closed by migrations 258 through 261 and the coverage *enforcement* added by 262 through 264
 - `AUTOMATION_ARMING.md` — the automation registry, the bounding model, the blast-radius predicate contract, the arming sequence and its refusal classes, `CM-NOTEDRIFT-022`
 - `GUARD_DETECTION.md` — how a `SECURITY DEFINER` function is judged guarded, the guard predicate registry, the comment-stripped match, the comments-gated / literals-advisory line, `AC-GUARDREG-023`, and the induced comment-only guard that proves the chain
-- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`, 258 through 264 with theirs in `FUNCTION_GRANT_TIERS.md`, and 265 through 267 with theirs back in `GUARD_DETECTION.md`
+- `FUNCTION_SAFETY_AUDIT.md` — the signal-pattern table, `CM-FNDRIFT-018`, the null-that-is-not-false defect closed by migration 268, the unheard refusal channel closed by migration 269, and the written reason `misleading_total` is published but does not gate
+- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`, 258 through 264 with theirs in `FUNCTION_GRANT_TIERS.md`, 265 through 267 with theirs back in `GUARD_DETECTION.md`, and 268 through 269 with theirs in `FUNCTION_SAFETY_AUDIT.md`
 
 Notion carries the same material for non-engineers under **🧭 Operations Hub —
 SOPs & FAQs**, with persona-routed SOPs and FAQs. ClickUp carries the
@@ -1957,6 +2064,74 @@ object: a dial that reads like a gauge. The remaining nine checkers have not yet
 been put through this and that is the next pass, in the order
 `tf_function_safety_audit`, `tf_security_scan`, `tf_access_review`, then the
 rest.
+
+**Pass 8, 2026-07-25, at migration 269.** Pass 7 named the next checker in the
+sweep and pass 8 took it. `tf_function_safety_audit` produced a defect one level
+below the shape pass 7 was hunting, and then reading its consumer produced a
+defect one level above, which turned out to be the largest of the three passes.
+
+| Claim carried into this pass | What the catalog said | Resolution |
+| --- | --- | --- |
+| The audit refuses when its pattern table is emptied | it refused on four of the five signal classes it reads. `vault_read` was not in the guard | migration 268 checks all five and returns `missing_signals` naming exactly which are absent |
+| A missing pattern class is loud | `body ~* null` is null, not false. Deleting three rows silently made every function read as not touching the Vault | migration 268's refusal fires first; proved by deleting the rows live and observing the pre-fix clone certify while the fixed function refuses |
+| `secret_touchers` is a stable inventory of 18 | it drops to 1 when the `vault_read` rows are deleted, under an `ok: true` payload reporting 84 functions and zero drift | asserted as exact arithmetic, `pre = 18 - vault_read_only`, inside migration 268's proof |
+| The audit cannot be emptied | a zero-function population returned every counter at zero under `ok: true` | migration 268 raises: *"A safety audit that examined nothing is not a pass."* |
+| Every catalog sweep filters `prokind` | this one did not; a `tf_*` aggregate would have raised `42809` and taken the audit down | migration 268 adds `and p.prokind = 'f'` |
+| One control consumer ignores its checker's `ok` flag | **five of six did.** `v_gt`, `v_nd`, `v_fn_bad`, `v_bool_haz`, `v_oob`. Only `v_gd` read it | migration 269 gives all six the same null-on-refusal shape |
+| A refusing checker is caught by the evaluator's exception handler | only if it refuses by *raise*. Four of the six can refuse **only** by return value, and those refusals were completely unheard | the `ok` flag is now honoured on the return path, independently of the raise path |
+| Migrations 267, conventions 25, house rules 12 | 269 / 26 / 13 | inventory, conventions register, house rules, defect-pattern library, symptoms table, open register, and a new `FUNCTION_SAFETY_AUDIT.md` |
+
+One convention went into the register this pass, number 26: **a refusal must
+cover every input the checker reads, and every consumer of a refusal must listen
+to it**. Two defect classes went into the library, **the null that is not false**
+and **the refusal with no listener**. One house rule went in as the thirteenth,
+carrying both halves.
+
+**On the strongest proof in the set, again, and this time there is no clone in
+the load-bearing arm.** Pass 6 had to label its proof as the weak kind. Pass 7
+could induce against the live object because the lever was a table. Pass 8 went
+further: migration 269 demonstrates the defect **live, before the patch, in the
+same transaction that applies it**, then demonstrates the fix after it, then
+restores and asserts exact recovery.
+
+The mechanism is worth writing down because it was assumed impossible for several
+passes. Inside a migration `auth.uid()` is null, so every `forbidden` guard on the
+platform is unreachable and nothing refuses. That is not true. Setting
+`request.jwt.claims` through `set_config` to a non-staff identity makes
+`auth.uid()` non-null and makes every read-path checker take its refusal branch
+at once. The migration asserts the induction actually took, that `auth.uid()` is
+non-null and that the chosen identity is genuinely not internal staff, before it
+asserts anything about the defect. Then it observes five controls reading
+`passing` while their checkers return `ok: false`, with `AC-GUARDREG-023` in the
+same evaluation as an in-transaction **control group** reading `attention` under
+the identical refusal. Same board, same call, same broken condition, different
+answer, and the only difference is which side of migration 265 the consumer was
+written on. That control group is what rules out "the evaluation was not really
+refusing" as an alternative explanation, and it is the piece that makes this the
+strongest proof shape on the platform.
+
+Everything re-measured this pass agreed on the second reading: 269 migrations,
+271 functions in `public`, 84 `tf_*` functions, the audit `ok: true` with 55
+writers, 29 reads, 7 transitive writers, 20 documented diagnostics, 0 drift, 0
+undeclared, 0 stale, 0 diagnostic violations, 18 secret touchers, 15 pattern rows
+across five signal classes, no `zz\_%` proof-fixture residue, and 23 controls at
+21 passing / 2 attention / 0 failing. The two in `attention` remain `AC-MFA-003`
+and `DP-PITR-007`, both owner actions. All thirteen automation flags read `false`.
+
+The finding worth carrying forward inverts the direction of the last two passes.
+Pass 6 asked what happens when the verifier's own number goes bad. Pass 7 asked
+who is allowed to move it. Pass 8 asks **who is listening when it says no**, and
+the answer across five of six consumers was nobody. Three passes of teaching
+checkers to refuse rather than certify nothing had been landing in a consumer that
+could not distinguish a refusal from a clean bill of health. Build the refusal,
+then walk the call graph and read every consumer of it. A refusal with no listener
+is not a safety feature, it is an unhandled exception with better manners.
+
+The sweep continues at `tf_security_scan`, then `tf_access_review`, then
+`tf_revenue_linkage_audit`, `tf_queue_health` and `tf_scheduler_health`. The
+three checkers already touched in passing here, `tf_automation_note_drift`,
+`tf_boolean_default_hazards` and `tf_automation_out_of_band`, now have listened-to
+refusals but still have no population or empty-input concept of their own.
 
 ---
 

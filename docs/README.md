@@ -45,6 +45,7 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - [`FUNCTION_GRANT_TIERS.md`](./FUNCTION_GRANT_TIERS.md) — the three-tier `EXECUTE` model, the Supabase default-privileges trap and its Postgres-native PUBLIC twin, `tf_apply_grant_tier`, `CM-GRANT-021`, **the coverage defect closed by migrations 258 through 261** (a checker whose own coverage was decided by the population it was checking), and **the coverage enforcement added by migrations 262 through 264** (publishing a denominator is not the same as failing on it)
 - [`AUTOMATION_ARMING.md`](./AUTOMATION_ARMING.md) — **read before arming anything that reaches a customer.** The thirteen-automation registry, the four-value bounding model, the blast-radius predicate contract, the eight-step arming sequence and its five refusal classes, and the copy-paste arm/disarm/audit runbook
 - [`GUARD_DETECTION.md`](./GUARD_DETECTION.md) — **how the platform decides a `SECURITY DEFINER` function is guarded, and why that decision was wrong until migration 254.** The guard predicate registry, the comment-stripping match, the comments-gated / literals-advisory line, control `AC-GUARDREG-023`, the induced comment-only guard that proves the whole chain catches, and **the exemption-lever defect closed by migrations 265 through 267** (a scan whose denominator could be shrunk by anyone with insert access, with no counter in the payload saying so)
+- [`FUNCTION_SAFETY_AUDIT.md`](./FUNCTION_SAFETY_AUDIT.md) — the fifteen-row signal-pattern table behind `CM-FNDRIFT-018`, **the null-that-is-not-false defect closed by migration 268** (a completeness guard that enumerated four of its five inputs, so deleting three rows silently collapsed the Vault-touching inventory from 18 functions to 1 under an `ok: true` payload), **the unheard refusal channel closed by migration 269** (five of six control consumers read past their checker's `ok` flag into a `coalesce(..., 0)`, turning every refusal into a green light), and the written reason `misleading_total` is published but deliberately gates nothing
 
 ## Interactive artifacts (this folder)
 Self-contained HTML. Open directly in a browser, no build step, no network.
@@ -123,6 +124,18 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
   population, and since 267 the decomposition is on the control board. Ask of any
   checker with an exemption, skip or ignore list: if somebody adds everything to
   it, what does this report? If the answer is "success", the list is the attack.
+- A refusal must cover every input the checker reads, and every consumer of a
+  refusal must listen to it. `tf_function_safety_audit` guarded four of its five
+  signal classes; because `body ~* null` is null rather than false, the unguarded
+  fifth could be deleted silently and every function on the platform read as not
+  touching the Vault. Since migration 268 the guard names all five and returns
+  `missing_signals`. On the consuming side, five of six checker consumers in
+  `tf_controls_evaluate` read past `ok: false` into a `coalesce(..., 0)`, and zero
+  is the value that means healthy, so a checker that had declined to answer
+  rendered `passing`. Since migration 269 all six null out on
+  `coalesce(payload->>'ok','false') <> 'true'`. Grep for any
+  `coalesce(x->>'k', 0)` where `x` also carries an `ok` key; that is the shape.
+  Building a refusal is half the work, walking the call graph is the other half.
 - Widen a signal, never repurpose a key. When migration 259 widened the
   undeclared sweep, `undeclared_anon_total` kept its original meaning as a strict
   subset and `undeclared_reachable_total` was added beside it. Redefining a key
@@ -132,7 +145,13 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
   catching anything is not a checker. Induce the failure in the same transaction
   and assert on the catch. Note that `set local role authenticated` alone leaves
   `auth.uid()` null; a guard test must set `request.jwt.claims` and clear it
-  afterwards.
+  afterwards. That is also the strongest induction lever on the platform:
+  `set_config('request.jwt.claims', '{"sub":"<non-staff uuid>","role":"authenticated"}', true)`
+  makes every read-path `forbidden` guard fire at once, live, inside a migration,
+  which is how migration 269 demonstrated its defect before the patch and its fix
+  after it in a single transaction with no clone anywhere in the load-bearing arm.
+  `set_config(..., '', true)` clears it, because the empty string passes through
+  `nullif` to null.
 - Conventions live in tables, checkers read the tables. A detection rule compiled
   into a function body can only be changed by someone willing to rewrite that
   function. See `tf_function_safety_patterns`, `tf_boolean_param_conventions`,

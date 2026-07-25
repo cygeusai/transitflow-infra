@@ -150,6 +150,8 @@ of what exists so nothing is silently dropped.
 | 265 | 20260725133630 | guard_detection_exemption_visibility_and_enforcement |
 | 266 | 20260725134042 | guard_detection_empty_population_refusal |
 | 267 | 20260725134156 | guardreg_control_evidence_denominator_widening |
+| 268 | 20260725135604 | function_safety_signal_completeness_and_empty_population_refusal |
+| 269 | 20260725140116 | controls_evaluate_honor_checker_refusal_flag |
 
 > **Migrations 262 through 264 are one change**, and they are the sequel to
 > 258–261 rather than a repeat of it. That block made the checker's coverage
@@ -192,6 +194,48 @@ of what exists so nothing is silently dropped.
 >
 > Full reasoning, both fixtures, the clone-proof method and the widened runbook
 > are in [`docs/FUNCTION_GRANT_TIERS.md`](../../docs/FUNCTION_GRANT_TIERS.md).
+
+> **Migrations 268 and 269 are one change**, and they are the third checker in
+> the sweep plus the discovery that the previous two passes had been shipping
+> refusals nobody downstream was reading.
+>
+> 268 takes `tf_function_safety_audit`. Its completeness guard on
+> `tf_function_safety_patterns` enumerated four of the five signal classes the
+> body reads; `vault_read` was missing. That is not a partial guard, because
+> `body ~* null` evaluates to **null**, not false. Deleting the three
+> `vault_read` rows therefore made every one of the 84 functions read as not
+> touching the Vault, collapsed `secret_touchers` from 18 entries to 1, and
+> returned `ok: true` with zero drift while doing it. 268 checks all five
+> classes, returns `missing_signals` naming exactly which are absent, adds the
+> empty-population refusal house rule eleven requires, and brings the population
+> CTE in line with every other catalog sweep by filtering `prokind = 'f'` so a
+> `tf_*` aggregate is classified out rather than raising `42809` and taking the
+> audit down.
+>
+> 269 is the larger half. Reading the consumer side found that **five of six**
+> checker consumers in `tf_controls_evaluate` ignore their checker's `ok` flag
+> and read straight into a `coalesce(..., 0)`, so a refusing checker arrives as a
+> clean zero and every status rule maps zero to `passing`. Only `v_gd` was
+> correct, and only because it was written after migration 265. Four of the six
+> checkers involved can refuse **only** by return value, never by raise, so the
+> evaluator's existing exception handler never saw them. Every refusal migrations
+> 262, 263, 265, 266 and 268 taught a checker to emit was landing somewhere that
+> could not tell refusal from cleanliness. 269 gives all six the same
+> null-on-refusal shape and verifies by counting the idiom in the patched body.
+>
+> The proof is the strongest shape used on this platform: no clone in the
+> load-bearing arm. `set_config('request.jwt.claims', ...)` pointed at a known
+> non-staff identity makes `auth.uid()` non-null inside the migration and drives
+> every read-path `forbidden` guard at once, which had been assumed impossible
+> for several passes. 269 therefore demonstrates the defect live **before** the
+> patch, applies it, demonstrates the fix **after**, restores and asserts exact
+> recovery of both status and evidence, with `AC-GUARDREG-023` serving as an
+> in-transaction control group reading `attention` under the identical refusal
+> that leaves the other five reading `passing`.
+>
+> Full reasoning, both proofs, the payload reference, the written reason
+> `misleading_total` is published but does not gate, and the operator runbook are
+> in [`docs/FUNCTION_SAFETY_AUDIT.md`](../../docs/FUNCTION_SAFETY_AUDIT.md).
 
 > **Migrations 265 through 267 are one change**, and they are house rule eleven
 > applied to a second checker. Migrations 262 through 264 taught the platform to

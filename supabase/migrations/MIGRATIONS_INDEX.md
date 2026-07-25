@@ -101,6 +101,7 @@ of what exists so nothing is silently dropped.
 | 216 | 20260725015147 | intake_send_guards_and_reminder_ladder |
 | 217 | 20260725015210 | intake_sweep_reminder_ladder_and_expiry |
 | 218 | 20260725015721 | intake_phone_match_trailing_ten |
+| 219 | 20260725021308 | revenue_convention_and_marketing_roi |
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

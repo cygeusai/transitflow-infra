@@ -30,6 +30,7 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - [`CLOSED_LOOP_AUTOTICKETING.md`](./CLOSED_LOOP_AUTOTICKETING.md) — self-ticketing and self-healing
 - [`RELIABILITY_INTEGRATION_WATCHDOG.md`](./RELIABILITY_INTEGRATION_WATCHDOG.md) — connector watchdog
 - [`IT_GOVERNANCE_GRC.md`](./IT_GOVERNANCE_GRC.md) — controls, access certification, SLOs
+- [`MARKETING_ROI_AND_REVENUE.md`](./MARKETING_ROI_AND_REVENUE.md) — collected-revenue convention, channel P&L
 
 ## Conventions
 - The database is the source of truth for access control (RLS).

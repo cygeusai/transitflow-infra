@@ -1,7 +1,7 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (155 migrations
-as of 2026-07-24). Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
+The full, ordered migration history of the Transit & Flow backend (186 migrations
+as of 2026-07-25). Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
 of what exists so nothing is silently dropped.
 
@@ -63,8 +63,13 @@ of what exists so nothing is silently dropped.
 | 173 | 20260724225950 | tf_integration_watchdog_autoticket_wiring |
 | 174 | 20260724235924 | tf_platform_overview |
 | 175 | 20260725001549 | tf_system_health_clickup_error_awareness |
-| 176 | 20260725003732 | tf_integration_health_report_primitive |
-| 177 | 20260725003838 | tf_system_health_uniform_error_awareness |
+| 176-180 | 202607250021xx-0025xx | cygeus_0001..0005 (tenancy/identity/RBAC, workflows/agents/knowledge, API grants, has_permission definer fix, set_updated_at hardening) |
+| 181 | 20260725003732 | tf_integration_health_report_primitive |
+| 182 | 20260725003838 | tf_system_health_uniform_error_awareness |
+| 183 | 20260725003941 | cygeus_0006_access_token_hook_and_onboarding |
+| 184 | 20260725005005 | integration_provider_add_slack |
+| 185 | 20260725005013 | slack_integration_settings_seed |
+| 186 | 20260725005101 | tf_system_health_slack_error_awareness |
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

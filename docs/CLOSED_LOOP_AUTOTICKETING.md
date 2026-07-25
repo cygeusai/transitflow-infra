@@ -73,6 +73,39 @@ Housecall Pro degraded → operational through the primitive.
 
 Drop-in for a worker: `await sb.rpc('tf_integration_health_report', {p_provider:'twilio', p_ok:false, p_error_code:'reauth_required', p_http_status:401})`.
 
+## All connectors wired (2026-07-25)
+
+Every API worker now self-reports through the primitive, so no connector can fail
+authentication while its health component stays green.
+
+| Connector | Worker | Detection |
+|-----------|--------|-----------|
+| QuickBooks | `qbo-sync` v2 | OAuth refresh rejection |
+| ClickUp | `tf-clickup-worker` v3 | 401/403 or "invalid token" body |
+| Slack | `tf-slack` v3 | `invalid_auth`, `not_authed`, `token_revoked`, `token_expired`, `account_inactive`, `missing_scope`, `invalid_token`, `no_permission`, or 401/403 |
+| Twilio | `tf-omni-send` v3 | 401/403 or Twilio codes 20003, 20005, 20008, 20404 |
+| Meta Graph | `tf-omni-send` v3 (reported as `other`) | 401 or Graph codes 190, 102 |
+| Housecall Pro | `tf-hcp-sync-techs` v2 | 401/403 inside the fetch helper; loops break early |
+
+**Auth-class vs config-class.** Only credential rejections degrade a connector.
+A Slack `channel_not_found` or `not_in_channel`, an invalid SMS destination, a
+`not_configured` provider, and a 404 on a single record are configuration or
+data problems, not auth problems, and are deliberately excluded. This keeps the
+status page honest: a connector credential failure is component-degraded, never
+a platform outage.
+
+`slack` was added to the `integration_provider` enum to make it a first-class
+connector. Note the Postgres rule that forced two migrations: an enum value may
+be added inside a transaction but not *used* in that same transaction, so the
+`ALTER TYPE` and the `integration_settings` seed ship separately.
+
+**Verified end to end.** Drove Slack degraded → healthy through the primitive:
+`ok=false` returned `{"action":"recorded"}`, health `reports` flipped to
+`degraded · "Slack API auth issue, rotate slack_bot_token"`, settings read
+`reauth_required` with 1 open error; `ok=true` returned `{"action":"healed"}`,
+settings returned to `connected`, open errors and open tickets to 0, and the
+health component back to `operational · scheduled & connected`.
+
 ## Verified
 
 End-to-end tested: a producer call created a real ClickUp task via the worker and

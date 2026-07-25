@@ -42,6 +42,7 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - [`MARKETING_ROI_AND_REVENUE.md`](./MARKETING_ROI_AND_REVENUE.md) — collected-revenue convention, channel P&L
 - [`REVENUE_LINKAGE.md`](./REVENUE_LINKAGE.md) — invoice-to-job sweep, natural-key integrity, traceability
 - [`SECURITY_GUARDS_AND_QUEUE_LANES.md`](./SECURITY_GUARDS_AND_QUEUE_LANES.md) — definer-guard axis, `AC-DEFN-017`, queue lane registry, orphan reason codes
+- [`FUNCTION_GRANT_TIERS.md`](./FUNCTION_GRANT_TIERS.md) — the three-tier `EXECUTE` model, the Supabase default-privileges trap, `tf_apply_grant_tier`, `CM-GRANT-021`
 
 ## Interactive artifacts (this folder)
 Self-contained HTML. Open directly in a browser, no build step, no network.
@@ -61,4 +62,24 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
 - A runbook is code. Every command a document gives an operator must be executed,
   with the operator's credentials, before that document is published.
 - A `tf_*` name does not tell you whether the function writes. Read
-  `pg_get_functiondef` before putting any call in a runbook.
+  `pg_get_functiondef` before putting any call in a runbook. Seven functions on
+  this platform are named like diagnostics and write; the register in
+  `tf_function_registry` is authoritative, the name is not.
+- `revoke all on function ... from public` is **not sufficient** on Supabase.
+  `ALTER DEFAULT PRIVILEGES` grants EXECUTE to `anon` and `authenticated` by
+  name, and revoking the PUBLIC pseudo-role leaves both grants in place. Use
+  `tf_apply_grant_tier`, which names them explicitly and records the intent.
+- A guard never observed refusing is not a guard, and a checker never observed
+  catching anything is not a checker. Induce the failure in the same transaction
+  and assert on the catch. Note that `set local role authenticated` alone leaves
+  `auth.uid()` null; a guard test must set `request.jwt.claims` and clear it
+  afterwards.
+- Conventions live in tables, checkers read the tables. A detection rule compiled
+  into a function body can only be changed by someone willing to rewrite that
+  function. See `tf_function_safety_patterns`, `tf_boolean_param_conventions`,
+  `tf_automation_registry`, `tf_function_grant_tiers`.
+- Never string-splice prose into a generated function body. Every quote needs
+  doubling twice and every escape needs escaping twice. Put the prose in its own
+  function and splice in the call.
+- Automation flags flip only through `tf_automation_arm`. A direct `update` on
+  `integration_settings` is detected as out-of-band and treated as an incident.

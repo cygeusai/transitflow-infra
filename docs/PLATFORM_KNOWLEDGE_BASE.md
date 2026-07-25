@@ -4,7 +4,7 @@ The single troubleshooting reference for the Transit & Flow backend. Written to
 be read at 2am by someone who did not build it.
 
 State captured 2026-07-25 against Supabase project `kjooyhvynkzuvsixsutt` at
-migration 231. Every number in this document was read out of the live database,
+migration 248. Every number in this document was read out of the live database,
 not remembered.
 
 ---
@@ -156,7 +156,10 @@ Routed by what you observe. Each row names the check to run first.
 | A ticket never appeared in ClickUp | ClickUp token expired; ticket row exists with `status='failed'` | `select * from auto_tickets where clickup_task_id is null` |
 | Nothing has synced from the field in hours | Housecall Pro webhook or hourly reconcile stalled | `tf_system_health(false)` → `housecall_pro.detail` |
 | A customer says they never got the prep text | Job-prep automation flag is off by design | `integration_settings.config->'automations'->>'job_prep'` |
-| A customer got a text they should not have | Autosend cutover timestamp stale, not refreshed before enabling | `config ->> 'intake_autosend_since'` |
+| A customer got a text they should not have | Autosend cutover timestamp stale, not refreshed before enabling | `tf_automation_readiness()` → the automation's `verdict` and `cutover_age_hours` |
+| An automation flag is on and nobody armed it | Flag flipped by direct `update`, bypassing `tf_automation_arm` | `tf_automation_out_of_band()`; control `CM-AUTOARM-020` |
+| `42501: permission denied for function` | The function is `admin` tier; you are calling it as `authenticated` | `select tier from tf_function_grant_tiers where proname='<name>'` |
+| A new function is reachable by `anon` and nobody granted it | Supabase `ALTER DEFAULT PRIVILEGES`; `revoke from public` does not undo it | `tf_grant_tier_audit()`; fix with `tf_apply_grant_tier` |
 | Two customer records for one person | Dedup sweep has not run, or phones differ in format | `tf_merge_duplicate_customers(true)` (dry run) |
 | Scheduled report did not arrive in Slack | Cron fired but Slack connector degraded | `tf_scheduler_health()` then the `integration_settings` query above |
 | A `tf_*` call raises `42883` or does something unexpected | The name implies a read; the function is a writer | *The first ten minutes*, side-effect table |
@@ -271,11 +274,40 @@ makes the cron-tolerant form work at all.
 Guards in the function body are only half the story. The `EXECUTE` grant decides
 who can reach the body at all, and the two mechanisms are frequently confused.
 
-| Tier | Who can call | Typical members |
-| --- | --- | --- |
-| `postgres`, `service_role` only | cron and edge functions | `tf_queue_health`, `tf_queue_discard`, `tf_queue_requeue`, `tf_system_health`, `tf_security_autoharden`, all `*_sweep` functions |
-| `authenticated`, `postgres`, `service_role` | staff and portal users, subject to the in-body guard | `tf_owner_dashboard`, `tf_customer_360`, `tf_marketing_roi`, `tf_render_document` |
-| `anon` | nothing non-public | intentionally empty |
+Since migration 248 (`grant_tier_drift_control`) the tiers are **data, not
+prose**. They live in
+`public.tf_function_grant_tiers`, they are applied by
+`public.tf_apply_grant_tier`, they are checked by `public.tf_grant_tier_audit`,
+and control `CM-GRANT-021` fails the board if the live ACL stops matching. The
+full treatment is in `FUNCTION_GRANT_TIERS.md`. The short version:
+
+| Tier | Roles granted | Requires an in-body guard | Typical members |
+| --- | --- | --- | --- |
+| `admin` | `postgres`, `service_role` | no, the grant *is* the control | `tf_automation_arm`, `tf_apply_grant_tier`, `tf_safety_autoticket`, `tf_grant_tier_autoticket`, the queue operators, every `*_sweep` |
+| `staff` | adds `authenticated` | **yes, always** | `tf_grant_tier_audit`, `tf_automation_readiness`, `tf_control_attest`, `tf_owner_dashboard`, `tf_customer_360`, `tf_marketing_roi` |
+| `anon` | adds `anon` | yes | exactly one: `studio_is_staff`, documented below |
+
+**Why this drifts on its own.** Supabase installs `ALTER DEFAULT PRIVILEGES IN
+SCHEMA public GRANT EXECUTE ON FUNCTIONS TO anon, authenticated`. Those are
+*named-role* grants. The idiom used across this repo for years,
+`revoke all on function ... from public`, revokes only the PUBLIC pseudo-role
+and leaves `anon` and `authenticated` still holding EXECUTE. Every new function
+in `public` is therefore reachable by an anonymous caller from the moment it is
+created until something names `anon` explicitly. This is not a Supabase defect,
+it is the platform default, and it is the reason the tier has to be asserted
+rather than assumed.
+
+The correct form is `revoke all on function ... from public, anon,
+authenticated;` followed by the intended grant. In practice, never write that by
+hand. Call `tf_apply_grant_tier(proname, ident_args, tier, rationale)`, which
+records the intent as well as applying it.
+
+**`studio_is_staff` is the one anon exception, and it is deliberate.** It is
+referenced by RLS policies whose role is PUBLIC, covering the public reads on
+`studio_plans`, `studio_products`, `studio_product_categories` and
+`studio_conversion_credit_rules`. Revoking `anon` EXECUTE would break the public
+storefront. It is in the tier table so that the checker treats it as declared
+rather than reporting it as an undeclared hole every fifteen minutes.
 
 **This is a real trap.** Impersonating a staff user with `set local role
 authenticated` and calling `tf_queue_discard` raises `42501: permission denied
@@ -291,6 +323,25 @@ set local role authenticated;
 set local request.jwt.claims = '{"sub":"<staff-user-uuid>","role":"authenticated"}';
 select public.tf_owner_dashboard();
 ```
+
+**Both lines are required, and the second one is the one people forget.**
+`auth.uid()` reads `request.jwt.claims`. It does *not* read the current role.
+`set local role authenticated` on its own leaves `auth.uid()` null, which means
+every cron-tolerant guard passes and every test of a guard silently succeeds
+without having tested anything. A guard test that omits the claims line is not a
+test, it is a false negative wearing a green tick.
+
+Inside a `do` block the equivalent is:
+
+```sql
+perform set_config('request.jwt.claims',
+  '{"sub":"dddddddd-0000-4000-a000-0000000000d1","role":"authenticated"}', true);
+-- ... assert the function refuses ...
+perform set_config('request.jwt.claims', '', true);
+```
+
+Clear the claims afterwards. They persist for the rest of the transaction, and
+any later call in the same block will be evaluated as that non-staff user.
 
 To exercise a service-tier function, call it as `postgres` with no impersonation
 at all.
@@ -421,10 +472,11 @@ event, because the next operator has no way to know whether it was safe.
 
 ## Conventions register
 
-Seven times, the highest-yield defect on this platform has been two writers each
-holding a different convention, both correct in isolation, silently disagreeing
-at the seam. Every one of these is now enforced somewhere the disagreement
-becomes an error at write time rather than a discrepancy at read time.
+Fourteen times, the highest-yield defect on this platform has been two writers
+each holding a different convention, both correct in isolation, silently
+disagreeing at the seam. Every one of these is now enforced somewhere the
+disagreement becomes an error at write time rather than a discrepancy at read
+time.
 
 | # | Convention | The canonical form | Enforced by |
 | --- | --- | --- | --- |
@@ -435,6 +487,13 @@ becomes an error at write time rather than a discrepancy at read time.
 | 5 | Security axis list | one list, referenced not retyped | axis array built inside `tf_security_scan` |
 | 6 | GRC control coverage | every security axis has a control | AC-DEFN-017 |
 | 7 | Queue lane provider type | `public.integration_provider`, never `text` | column type plus a registry-completeness post-check against `pg_enum` |
+| 8 | Function side-effect class | every `tf_*` function declares `read` or `write` | `tf_function_registry` + `tf_function_safety_audit`, ticket key `safety:function_drift` |
+| 9 | Boolean parameter meaning | `p_dry_run` defaults `true`; any other boolean defaults to the inert value | `tf_boolean_param_conventions` + `tf_boolean_default_hazards`, ticket key `safety:boolean_defaults` |
+| 10 | Automation arming | flags flip only through `tf_automation_arm`, which logs to `automation_arm_log` | `tf_automation_out_of_band`, control `CM-AUTOARM-020`, ticket key `safety:automation_cutover` |
+| 11 | Function EXECUTE grants | every function carries exactly the grants its declared tier implies | `tf_function_grant_tiers` + `tf_grant_tier_audit`, control `CM-GRANT-021`, ticket key `safety:grant_tier` |
+| 12 | Control evidence integrity | an automated control must be named in both the status CASE and the evidence CASE | `tf_controls_evaluate` wiring assertion in every control migration |
+| 13 | Manual control attestation | manual controls are attested by a human through `tf_control_attest`, never auto-passed | `it_controls.last_attested_at` split from `last_evaluated_at` |
+| 14 | Detection rules as data | patterns live in tables, not in checker bodies | `tf_function_safety_patterns`, `tf_boolean_param_conventions`, `tf_automation_registry`, `tf_function_grant_tiers` |
 
 The countermeasure that keeps working is the same every time: express the
 convention in the database, on the *normalised* form of the value, so violation
@@ -442,6 +501,16 @@ is impossible rather than merely discouraged.
 
 Convention documented in prose is a convention that will drift. Convention
 expressed as a unique index is a convention that cannot.
+
+**Conventions 8 through 14 share a shape worth naming.** Each one is a table of
+rules, a function that applies them, a checker that compares live state to the
+table, a GRC control that fails when they disagree, and an auto-ticket key that
+puts the disagreement in front of a human. Five parts. When a new convention is
+introduced on this platform, build all five or it will drift like the first
+seven did. The reason the rules live in tables rather than inside the checkers is
+that a rule embedded in a function body can only be changed by a migration
+written by someone who understands the function; a rule in a table can be
+inspected, queried, and extended by an operator at 2am.
 
 ---
 
@@ -480,13 +549,58 @@ multi-anchor patch.
 `control_key`, not `control_id`. Read `information_schema.columns` before
 writing the query; it costs one round trip and saves three.
 
-**A name that implies a read on a function that writes.**
-`tf_integration_health_report` sounds like a report and is a writer that opens a
-ticket. `tf_integration_watchdog(false)` looks like a dry run and mutates either
-way. Both were documented as safe diagnostics on the strength of their names.
-Fix: before putting any call in a runbook, read
-`pg_get_functiondef(oid)` and look for DML. Two functions on this platform were
-named badly enough to survive review; assume there is a third.
+**A name that implies a read on a function that writes.** This was documented as
+"two functions, assume there is a third." That was wrong, and the way it was
+wrong is the lesson. Once the classification was made data rather than judgement,
+`tf_function_registry` proved **seven**:
+
+| Function | What the name suggests | What it does |
+| --- | --- | --- |
+| `tf_access_review` | a review | writes access-certification rows |
+| `tf_controls_evaluate` | an evaluation | updates `it_controls` status and evidence |
+| `tf_integration_health_report` | a report | five-argument writer that opens a ticket |
+| `tf_it_governance_report` | a report | writes |
+| `tf_ops_report` | a report | writes, and reaches Slack over HTTP |
+| `tf_scheduler_health` | a health read | upserts `cron_job_registry` and deletes stale rows |
+| `tf_system_health` | a health read | writes a snapshot **when `p_post` is true**; `tf_system_health(false)` is inert |
+
+Two of the seven, `tf_scheduler_health` and `tf_system_health`, are *acknowledged*
+diagnostics-that-mutate: `documented_as_diagnostic` and `write_acknowledged` are
+both true in the registry, and the mutation is intentional and documented. The
+other five are simply badly named and are flagged as such.
+
+Three more write and reach third parties over HTTP without their names saying so:
+`tf_draft_review_reply`, `tf_report_with_sync`, and again `tf_ops_report`.
+
+Fix: before putting any call in a runbook, `select * from tf_function_registry
+where proname = '<name>'`. If it is not there, `tf_function_safety_audit()` will
+report it as undeclared within fifteen minutes. Do not reason from the name. The
+estimate "assume there is a third" was off by a factor of three and a half, which
+is what estimating instead of measuring costs.
+
+**Grant tier drift with no author.** A function is created, the migration
+revokes from `public`, the author believes it is locked down, and `anon` can call
+it. Nobody did anything wrong and the hole is real. Cause: Supabase's
+`ALTER DEFAULT PRIVILEGES` grants EXECUTE to `anon` and `authenticated` by name,
+and revoking the PUBLIC pseudo-role does not touch named-role grants. Fix:
+`tf_apply_grant_tier`. Detection: `tf_grant_tier_audit()`, every fifteen minutes,
+control `CM-GRANT-021`.
+
+**`has_function_privilege` rejects an identity-argument string.**
+`pg_get_function_identity_arguments(oid)` returns parameter *names* as well as
+types, for example `p_key text, p_enable boolean`. GRANT and REVOKE accept that.
+`has_function_privilege(role, text, 'execute')` parses its second argument as a
+type list and raises `invalid type name`. Fix: resolve the `pg_proc.oid` and call
+`has_function_privilege(role, oid, 'execute')`.
+
+**Prose spliced into generated SQL.** A migration that patches function B by
+string-generating a large text literal into function A's body has to double every
+`'` twice and escape every `E'\n'` twice. It raises `42601: syntax error at or
+near "\"` and no amount of careful counting fixes it reliably. This cost a full
+migration attempt. Fix, and it is structural rather than cosmetic: **put the
+prose in its own function** where quoting is ordinary, and splice only a few
+short call lines into the caller. Migration 248 failed one way and succeeded the
+other way with no change to the prose itself.
 
 **A boolean parameter assumed to be `dry_run`.** The platform has both
 conventions in play. `tf_link_revenue(p_dry_run boolean default true)` really is
@@ -512,7 +626,7 @@ diagnostic can be wrong in two different ways, it must say which one.
 
 ## The house rules
 
-Four rules, each of which exists because breaking it cost real time.
+Seven rules, each of which exists because breaking it cost real time.
 
 **A migration that creates or replaces a function must drive that function in a
 post-check, not inspect it.** Migration 229 in this repo's ordinal series applied
@@ -539,6 +653,32 @@ proofreading it, on the first pass after publication. Every command a runbook
 gives an operator must be run, in the state and with the credentials the
 operator will have, before it is published. The `do $drive$` rule applies to
 prose exactly as it applies to migrations.
+
+**A guard never observed refusing is not a guard.** Writing the guard is not
+evidence the guard works. A migration that adds one must, in the same
+transaction, impersonate a principal who should be refused and assert on the
+refusal, distinguishing the two refusal styles: read paths return
+`{"ok": false, "error": "forbidden"}`, mutating admin paths `raise`. Asserting
+only that the call did not succeed is too weak, because a guard test that never
+set `request.jwt.claims` also does not succeed at proving anything.
+
+**A checker never observed catching anything is not a checker.** A checker that
+returns zero violations on a clean database is indistinguishable from a checker
+that returns zero violations always. Migration 248 therefore does this inside
+its own transaction: assert the baseline is clean, deliberately open the hole
+(`grant execute on function tf_automation_arm to authenticated`), assert the
+checker now reports exactly one drift, assert the GRC control has flipped to
+`failing`, revert the grant, assert the checker is clean again and the control
+is `passing`. Every new checker owes the same proof. If the failure mode cannot
+be induced in a transaction, that is a signal the checker is testing the wrong
+thing.
+
+**Conventions live in tables, checkers read the tables.** A detection rule
+compiled into a checker body can only be revised by someone willing to rewrite
+that function. The same rule in a table can be read, queried, added to and
+audited by an operator with no context. This is why
+`tf_function_safety_patterns`, `tf_boolean_param_conventions`,
+`tf_automation_registry` and `tf_function_grant_tiers` exist as data.
 
 ---
 
@@ -667,15 +807,70 @@ reserved fictional numbers, `(614) 555-0142` and `(614) 555-0143`.
 **Before that flag is ever set to `true`,** refresh
 `config ->> 'intake_autosend_since'` to the actual cutover moment. The field is
 *not* empty, and that is the trap. It currently reads
-`2026-07-18T02:51:54.728504+00:00`, set during build-out and now a week stale.
-An operator who checks that the timestamp is present, sees a value, and enables
-the flag will back-text every job created since 2026-07-18. A stale cutover
-timestamp is more dangerous than a missing one, because a missing one looks
-wrong and a stale one looks done.
+`2026-07-18T02:51:54.728504+00:00`, set during build-out and now **176 hours**
+stale. An operator who checks that the timestamp is present, sees a value, and
+enables the flag will back-text every job created since 2026-07-18. A stale
+cutover timestamp is more dangerous than a missing one, because a missing one
+looks wrong and a stale one looks done.
 
-The sequence is: set the cutover timestamp to `now()`, verify it reads back,
-then enable the flag. Never the other way round, and never on the strength of
-the field merely being populated.
+**And `job_prep` is not the only one.** Three automations carry a populated,
+stale cutover timestamp right now, each of which would back-contact on arming:
+
+| Automation | Cutover key | Stale by | Rows it would touch on the first tick |
+| --- | --- | --- | --- |
+| `job_prep` | `intake_autosend_since` | 176 h | **17** |
+| `review_requests` | `review_requests_since` | 172 h | **7** |
+| `ai_booking` | `ai_agent.booking_since` | 165 h | 0 today, but the sweep POSTs to an edge function with no auth guard of its own and caps at five leads per tick, so the real exposure is the backlog across successive ticks |
+| `marketplace_dispatch` | `marketplace_dispatch_since` | 172 h | not customer-reaching, but the predicate is still untranscribed |
+
+Do not read those numbers from this table when it matters. Read them live:
+
+```sql
+select public.tf_automation_readiness();
+```
+
+That returns, per automation, the enabled state, the cutover path and value, the
+cutover age in hours, the computed blast radius, and a verdict. Today: **13
+automations, 0 armed, 0 ready, 10 blocked, 3 stale_cutover.**
+
+### The arming procedure
+
+**`tf_automation_arm(p_key text, p_enable boolean)` is the only sanctioned way
+to flip an automation flag.** It is `admin` tier, so no authenticated session can
+reach it. It validates the key, refuses to arm anything whose readiness verdict
+is not clean, and writes to `automation_arm_log`. A flag changed by a direct
+`update` on `integration_settings` bypasses all of that, and
+`tf_automation_out_of_band()` will detect the discrepancy and open a ticket under
+`safety:automation_cutover`, with control `CM-AUTOARM-020` failing until it is
+reconciled. That is the intended outcome. Out-of-band arming is treated as an
+incident, not as a shortcut.
+
+The sequence, in order, and never any other order:
+
+1. `select public.tf_automation_readiness();` and find the automation.
+2. `select public.tf_automation_blast_radius('<key>');` and read the number of
+   rows the first tick will touch. If that number surprises you, stop.
+3. Refresh the cutover timestamp to `now()`.
+4. Re-run `tf_automation_readiness()` and confirm the verdict is no longer
+   `stale_cutover`.
+5. `select public.tf_automation_arm('<key>', true);`
+6. Watch the next tick. Every sweep is on pg_cron at a two-to-five minute cadence,
+   so confirmation is minutes away, not hours.
+
+Never arm on the strength of a field merely being populated. Never arm two
+automations in the same window; if something goes out that should not have, you
+want exactly one candidate.
+
+**Ten automations are blocked and cannot be armed at all today**, because their
+blast-radius predicate has not been transcribed into `tf_automation_registry`.
+That is deliberate. Of those, three, `live_connect`, `missed_call_textback` and
+`push_estimates_to_hcp`, are implemented entirely in edge functions and no
+`tf_*` function references their key, so a SQL blast radius cannot be computed
+for them in principle. They stay blocked with that explanation rather than being
+waved through. The remaining seven, `cx_sequences`, `cx_first_response`,
+`eta_reminders`, `appt_reminders`, `estimate_followups`,
+`late_penalty_enforcement` and `marketplace_dispatch`, are blocked pending
+transcription and are the next tranche of work.
 
 The intake path itself carries a send-guard ladder, a reminder ladder, and an
 expiry, documented in `JOB_PREP_INTAKE.md`. Phone matching uses the trailing-ten
@@ -697,7 +892,13 @@ ClickUp ticket produced by the auto-ticket engine.
 | 3 | Enable MFA on the owner account | `86bb3ae6c` | control AC-MFA-003 |
 | 4 | Enable Point-in-Time Recovery | `86bb3ayzr` | control DP-PITR-007 |
 | 5 | Enable Google and Microsoft SSO providers | `86bb3az04` | provisioning coverage |
-| 6 | Normalise the 2 bare QuickBooks invoice external ids (80, 82) | `86bb3byg5` | `duplicate_key_risk` |
+| ~~6~~ | ~~Normalise the 2 bare QuickBooks invoice external ids (80, 82)~~ | `86bb3byg5` | **resolved by migration 237** |
+
+Item 6 is closed. Migration 237, `normalize_bare_quickbooks_invoice_external_ids`,
+normalised both rows and added the unique index
+on the normalised expression, so the defect cannot recur rather than merely
+having been cleaned up. Verified 2026-07-25: 31 of 31 invoices carry a
+`<realm>:<qbId>` external id, zero bare.
 
 Items 1 and 2 are the *entire* reason `overall` reads `degraded`. Close both and
 the board goes green.
@@ -779,23 +980,57 @@ Read live from the catalog, not counted by hand.
 
 | | Count |
 | --- | --- |
-| Migrations applied | 231 |
-| Base tables in `public` | 163 |
-| Tables with RLS enabled | 163 (100%) |
-| RLS policies | 574 |
-| Functions in `public` | 254 |
-| `tf_*` operator functions | 67 |
+| Migrations applied | 248 |
+| Base tables in `public` | 170 |
+| Tables with RLS enabled | 170 (100%) |
+| RLS policies | 581 |
+| Functions in `public` | 269 |
+| `tf_*` operator functions | 78 |
+| `tf_*` functions declared in `tf_function_registry` | 78 (100%) |
+| Functions with a declared grant tier | 12 |
 | Views | 7 |
 | Enums | 80 |
-| Indexes | 645 |
-| pg_cron jobs | 36 |
+| Indexes | 654 |
+| Active pg_cron jobs | 37 |
 | Edge functions | 37 |
-| GRC controls | 17 |
+| GRC controls | 21 |
+| Controls passing / attention / failing | 19 / 2 / 0 |
+| Automations armed | 0 of 13 |
 
-163 of 163 tables carry RLS. That is the number to re-check after any migration
+170 of 170 tables carry RLS. That is the number to re-check after any migration
 that creates a table, because a new table without RLS is the single fastest way
 to open a cross-tenant leak, and `rls_disabled_tables` is the axis that catches
 it.
+
+78 of 78 `tf_*` functions are declared in `tf_function_registry`. That is the
+second number to re-check, because an undeclared function is one whose
+side-effect class nobody has stated, and `tf_function_safety_audit()` will open a
+ticket under `safety:function_drift` within fifteen minutes if the two counts
+diverge.
+
+The two controls in `attention` are both owner actions rather than code defects:
+`AC-MFA-003`, one privileged account without MFA, and `DP-PITR-007`,
+point-in-time recovery not yet enabled. Zero controls are failing.
+
+To reproduce this whole table in one statement:
+
+```sql
+select
+  (select count(*) from supabase_migrations.schema_migrations)                         as migrations,
+  (select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
+     where n.nspname='public' and c.relkind='r')                                       as base_tables,
+  (select count(*) from pg_class c join pg_namespace n on n.oid=c.relnamespace
+     where n.nspname='public' and c.relkind='r' and c.relrowsecurity)                   as rls_tables,
+  (select count(*) from pg_policies where schemaname='public')                          as policies,
+  (select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+     where n.nspname='public')                                                          as functions,
+  (select count(*) from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+     where n.nspname='public' and p.proname like 'tf/_%' escape '/')                    as tf_functions,
+  (select count(*) from public.tf_function_registry)                                    as declared,
+  (select count(*) from public.tf_function_grant_tiers)                                 as tiered,
+  (select count(*) from cron.job where active)                                          as cron_jobs,
+  (select count(*) from public.it_controls)                                             as controls;
+```
 
 ---
 
@@ -828,6 +1063,7 @@ subject-specific notes beside it in `docs/`:
 - `MARKETING_ROI_AND_REVENUE.md` — collected-revenue convention, channel P&L
 - `REVENUE_LINKAGE.md` — invoice-to-job sweep, natural-key integrity
 - `SECURITY_GUARDS_AND_QUEUE_LANES.md` — the guard sweep, AC-DEFN-017, lane registry
+- `FUNCTION_GRANT_TIERS.md` — the three-tier grant model, the Supabase default-privileges trap, `CM-GRANT-021`
 - `MIGRATIONS_INDEX.md` — the ordered migration manifest
 
 Notion carries the same material for non-engineers under **🧭 Operations Hub —
@@ -869,6 +1105,34 @@ The finding worth carrying forward: the three failures clustered entirely in the
 written by transcribing live output were correct. The section written by
 reasoning about what an operator should run was not. Documentation drifts
 fastest where it is least examined and most load-bearing.
+
+**Pass 2, 2026-07-25, at migration 248.** Seventeen migrations landed between
+pass 1 and pass 2. Six defects found, again all in the document, none in the
+database.
+
+| Claim as published | Live reality | Resolution |
+| --- | --- | --- |
+| Migrations applied: 231 | 248 | corrected, along with every other inventory row, all of which had moved |
+| `tf_*` operator functions: 67 | 78 | corrected; registry coverage row added so the two can be compared |
+| "Two functions were named badly enough to survive review; assume there is a third" | **seven**, proven from `tf_function_registry`, of which two are acknowledged diagnostics-that-mutate | replaced the estimate with the measured table |
+| One stale cutover timestamp (`intake_autosend_since`) | **three** stale cutovers, with measured blast radii of 17 and 7 rows | generalised, and the operator pointed at `tf_automation_readiness()` rather than at a hard-coded field |
+| Grant tiers described as prose, `anon` tier "intentionally empty" | tiers are now data in `tf_function_grant_tiers`; `anon` has exactly one deliberate member, `studio_is_staff` | rewritten against the live tier table, with the Supabase default-privileges trap documented |
+| Arming procedure absent entirely | `tf_automation_arm` is the only sanctioned path and out-of-band arming is a detected incident | full arming procedure added |
+| Owner action 6 still listed open | resolved by migration 232, 0 of 31 invoices bare | struck through and the ticket closed |
+
+Everything re-measured this pass agreed with the database on the second reading:
+`tf_grant_tier_audit()` returned `violation_total: 0` across 12 declared tiers,
+`tf_controls_evaluate()` returned 21 controls with 19 passing, 2 in attention and
+0 failing, `tf_security_scan()` returned all five axes at zero with `gap_total: 0`,
+and all 13 automation flags read `false`.
+
+The finding worth carrying forward from this pass is sharper than pass 1's. Every
+single defect was a **number or a count that had been correct when written**. Not
+one was a reasoning error. The document did not become wrong, it became stale,
+and stale reads exactly like correct to the operator at 2am. The countermeasure
+is the same one the database uses on itself: where this document states a count,
+it now also states the query that produces it, so the next reader can refute it
+in one round trip instead of trusting it.
 
 ---
 

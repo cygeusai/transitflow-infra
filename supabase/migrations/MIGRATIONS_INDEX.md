@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (231 migrations
+The full, ordered migration history of the Transit & Flow backend (248 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -114,6 +114,33 @@ of what exists so nothing is silently dropped.
 | 229 | 20260725092821 | queue_lane_registry_and_health_v6_orphan_lanes |
 | 230 | 20260725093324 | fix_queue_lane_registry_enum_type_and_full_seed |
 | 231 | 20260725093446 | tf_queue_health_v7_honest_orphan_evidence_and_registry_gap |
+| 232 | 20260725101452 | create_studio_products_bucket |
+| 233 | 20260725101459 | temp_studio_products_upload_window |
+| 234 | 20260725101532 | close_studio_products_upload_window |
+| 235 | 20260725101735 | temp_studio_products_seed_window |
+| 236 | 20260725101754 | temp_grant_anon_seed_studio_products |
+| 237 | 20260725101814 | normalize_bare_quickbooks_invoice_external_ids |
+| 238 | 20260725101919 | close_studio_products_seed_window |
+| 239 | 20260725102720 | tf_function_safety_audit_and_registry |
+| 240 | 20260725102927 | tf_function_safety_close_http_detection_gap |
+| 241 | 20260725103527 | tf_intake_sweep_tenant_scoping |
+| 242 | 20260725103811 | tf_automation_arming_safety |
+| 243 | 20260725103941 | tf_boolean_default_hazards_and_cutover_age_fix |
+| 244 | 20260725104122 | it_controls_evidence_integrity_and_attestation |
+| 245 | 20260725105044 | tf_safety_autoticket_and_out_of_band_arming |
+| 246 | 20260725105218 | boolean_default_hazard_remediation |
+| 247 | 20260725110148 | grant_tier_remediation |
+| 248 | 20260725111529 | grant_tier_drift_control |
+
+
+> **Ordinal reconciliation.** Ordinals here are the true
+> `row_number() over (order by version)`. Some `rationale` strings stored inside
+> the database during the 2026-07-25 build session reference an informal counter
+> that runs behind this series (for example, `tf_function_registry` rows say
+> "seeded at migration 233" for what is ordinal **239**,
+> `tf_function_safety_audit_and_registry`). Where the two disagree, **the ordinal
+> in this file is correct and the migration name is the unambiguous identifier**.
+> Cite migrations by name.
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

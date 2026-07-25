@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (264 migrations
+The full, ordered migration history of the Transit & Flow backend (277 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -152,6 +152,103 @@ of what exists so nothing is silently dropped.
 | 267 | 20260725134156 | guardreg_control_evidence_denominator_widening |
 | 268 | 20260725135604 | function_safety_signal_completeness_and_empty_population_refusal |
 | 269 | 20260725140116 | controls_evaluate_honor_checker_refusal_flag |
+| 270 | 20260725142025 | studio_founding_access_and_event_taxonomy *(concurrent agent)* |
+| 271 | 20260725142046 | studio_founding_guard_and_stats *(concurrent agent)* |
+| 272 | 20260725142434 | least_privilege_revoke_truncate_trigger_references_from_client_roles |
+| 273 | 20260725142709 | studio_funnel_indexes_and_reporting *(concurrent agent)* |
+| 274 | 20260725143527 | reconcile_founding_and_studio_definer_functions_to_declared_grant_tiers |
+| 275 | 20260725143849 | safety_audit_classifies_returns_trigger_functions_as_write_paths |
+| 276 | 20260725144112 | registers_validate_their_own_rows_against_the_catalog |
+| 277 | 20260725144141 | studio_founding_anon_insert_grant *(concurrent agent)* |
+
+> **Migrations 270 through 277 were applied by two agents interleaved into one
+> version stream, and that is itself the finding.** Four of these eight (270,
+> 271, 273, 277) were deployed to production by the Lovable agent building the
+> Studio Founding Access and Studio Analytics features while this session's
+> hardening migrations (272, 274, 275, 276) were open. During that window the
+> base-table count moved 171 to 173 and the `tf_*` function count moved 84 to 91.
+>
+> **There is no lock, no alert and no drift notification on this.** Two agents
+> can write DDL to the same production schema with no coordination primitive
+> between them. The practical consequences were immediate and are worth recording
+> because they generalise:
+>
+> 1. **Absolute-count assertions become races.** Migration 274's first attempt
+>    asserted an end-state (`a_unguarded <> 0`) and rolled back, not because the
+>    remediation failed but because the population grew mid-transaction. The rule
+>    that survives is: **assert deltas measured inside the transaction, never
+>    absolute counts pinned from an earlier query.** Report anything that arrived
+>    concurrently by `raise notice`, never by `raise`.
+> 2. **Ordinals cannot be predicted while a session is open.** This block was
+>    written up in-session as "migrations 270 through 273" and is in fact 272,
+>    274, 275 and 276. The migration **name** is the only stable identifier. Cite
+>    migrations by name, per the ordinal-reconciliation note at the foot of this
+>    file.
+> 3. **Register rows arrive un-applied.** The concurrent agent inserted rows into
+>    `tf_function_grant_tiers` by hand rather than through `tf_apply_grant_tier`,
+>    keyed on the bare type list `'integer'` instead of the identity-argument
+>    string `'p_days integer'`. They resolved to nothing, counted as violations,
+>    and never applied the ACL they declared. Migration 276 makes the table refuse
+>    or canonicalise such rows.
+>
+> The governance decision this needs, a deployment lock or at minimum a
+> post-deploy drift notification, is open and unassigned.
+
+> **Migration 272** revokes `TRUNCATE`, `TRIGGER`, `REFERENCES` and `MAINTAIN`
+> from `anon` and `authenticated` on every base table in `public`. `TRUNCATE` is
+> **not gated by RLS**: it does not visit rows, so no policy can constrain it, and
+> 172 of 173 tables granted it to `authenticated`. It was never reachable through
+> PostgREST, which has no HTTP verb mapping to `TRUNCATE`, which is exactly why
+> nothing broke and why nobody looked. `SELECT`, `INSERT`, `UPDATE` and `DELETE`
+> are left intact so no application path changes. The residual, the
+> `supabase_admin`-owned default ACL still reading `anon=arwdDxtm`, and the
+> monitoring gap, no scanner axis watches this yet, are recorded in
+> [`docs/LEAST_PRIVILEGE_TABLE_GRANTS.md`](../../docs/LEAST_PRIVILEGE_TABLE_GRANTS.md)
+> along with the evidence that the hardening held under migration 277's later
+> anon grant.
+
+> **Migration 274** reconciles the five definer functions the concurrent agent
+> deployed. Two of them, `tf_studio_funnel` and `tf_studio_quality_gates`, were
+> `SECURITY DEFINER` with `EXECUTE` held by `anon` and `authenticated`, no guard,
+> aggregating `public.studio_events` whose only `SELECT` policy is
+> `events_staff_read = studio_is_staff()` and on which `anon` holds no `SELECT` at
+> all. **Aggregation is not anonymisation.** A definer function over a staff-gated
+> table is a hole in that gate unless it re-asserts the gate itself. Both were
+> converted to plpgsql and given the studio guard idiom, bodies otherwise
+> byte-identical. The three founding functions were tiered `admin`, `admin`,
+> `anon`. A savepoint probe proved `tf_founding_guard` still fires after its
+> `EXECUTE` revoke, confirming that **Postgres checks `EXECUTE` on a trigger
+> function at `CREATE TRIGGER` time, not at fire time**. `gap_total` moved 10 to
+> 1, `secdef_authenticated_no_guard` 5 to 0.
+
+> **Migrations 275 and 276 are one change**, and they are the fourth checker in
+> the sweep. 275 fixes a classifier blind spot: a function that `RETURNS trigger`
+> is a write path **by construction**, since it runs inside another statement's
+> DML and its return value is the row that statement writes, so there is no DML
+> keyword in the body for a pattern sweep to find. Three functions were classified
+> `read` on that basis, including `tf_assign_job_number`, which rewrites the
+> customer-facing job identifier of every job the business creates. The fix
+> classifies structurally on `pg_proc.prorettype`, and proves itself by an exact
+> partition: `reads` down by exactly the pre-computed flip count, `writers` up by
+> exactly that count, `transitive_writers` unmoved.
+>
+> 276 is the larger half. The one drift row 275 surfaced carried the rationale
+> "Baseline classification seeded from `tf_function_safety_audit()` at migration
+> 233" — **the register agreed with the checker because the register was populated
+> by the checker.** A register seeded from a checker inherits every blind spot
+> that checker had on the day it was seeded, and from then on the two agree with
+> each other forever. 276 corrects the class rather than the instance, then
+> attaches `BEFORE INSERT OR UPDATE` validators to both `tf_function_registry` and
+> `tf_function_grant_tiers` so that a table a checker reads refuses to hold a row
+> the checker cannot verify. Both validators are deliberately `SECURITY INVOKER`,
+> so they add nothing to the reachable-definer population `AC-DEFN-017` reasons
+> about. Four inductions prove each refusal live and assert it fired for the right
+> reason, the fourth replaying the concurrent agent's exact mis-keyed row and
+> requiring it to land canonicalised.
+>
+> The full reasoning, the savepoint-probe technique, both validator bodies and the
+> operator runbook are in
+> [`docs/REGISTER_INTEGRITY.md`](../../docs/REGISTER_INTEGRITY.md).
 
 > **Migrations 262 through 264 are one change**, and they are the sequel to
 > 258–261 rather than a repeat of it. That block made the checker's coverage

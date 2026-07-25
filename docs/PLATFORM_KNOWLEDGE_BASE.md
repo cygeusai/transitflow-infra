@@ -4,8 +4,12 @@ The single troubleshooting reference for the Transit & Flow backend. Written to
 be read at 2am by someone who did not build it.
 
 State captured 2026-07-25 against Supabase project `kjooyhvynkzuvsixsutt` at
-migration 269. Every number in this document was read out of the live database,
+migration 276. Every number in this document was read out of the live database,
 not remembered.
+
+Migrations 270 through 277 were applied by **two agents interleaved into one
+version stream**, so ordinals in that range are not contiguous per author. Cite
+migrations by name. See the note at the head of `MIGRATIONS_INDEX.md`.
 
 ---
 
@@ -190,6 +194,11 @@ Routed by what you observe. Each row names the check to run first.
 | `tf_function_safety_audit()` returns `error: pattern_table_empty` | one or more of the five signal classes has no rows in `tf_function_safety_patterns` | `missing_signals` names exactly which; reseed that class, never a placeholder regex |
 | `secret_touchers` dropped from 18 to 1 between readings | the `vault_read` pattern rows were deleted; `body ~* null` is null, not false, so every function reads as not touching the Vault | `select count(*) from tf_function_safety_patterns where signal='vault_read'`, expect 3. Since migration 268 the audit refuses instead of reporting this |
 | A control reads `passing` while its checker plainly cannot run | the deployed `tf_controls_evaluate` predates migration 269 and reads past the `ok` flag | count occurrences of `->>'ok','false'` in `pg_get_functiondef`; it must appear six times |
+| A trigger function is classified `read` by the safety audit | the deployed audit predates migration 275 and classifies by DML keyword only; a `RETURNS trigger` body has no DML keyword in it | `select proname from pg_proc where pronamespace='public'::regnamespace and prorettype='pg_catalog.trigger'::regtype`, then check `totals->'trigger_writers'` is non-zero |
+| `tf_grant_tier_audit` reports `missing_total` above 0 with rows that look correct | a register row was hand-written with the bare type list (`'integer'`) instead of the identity-argument string (`'p_days integer'`), so it resolves to no function and applies no ACL | `select proname, ident_args from tf_function_grant_tiers t where not exists (select 1 from pg_proc p where p.pronamespace='public'::regnamespace and p.proname=t.proname and pg_get_function_identity_arguments(p.oid)=t.ident_args)`. Since migration 276 the table canonicalises or refuses these |
+| A definer function returns aggregate counts over a table the caller cannot `SELECT` | aggregation is not anonymisation; a `SECURITY DEFINER` function over a policy-gated table bypasses that gate unless it re-asserts it in its own body | read `pg_get_functiondef`, confirm the guard idiom is present; see migration 274 and `tf_studio_funnel` |
+| A migration asserting an end-state rolls back for no apparent reason | a concurrent agent deployed to production mid-transaction and the population grew | assert deltas measured inside the transaction, never absolute counts pinned earlier; report concurrent arrivals by `raise notice`. See the head of `MIGRATIONS_INDEX.md` |
+| A table is emptied and no RLS policy could have allowed it | `TRUNCATE` does not visit rows, so no policy constrains it | `select count(*) from pg_class c where c.relnamespace='public'::regnamespace and c.relkind='r' and has_table_privilege('authenticated', c.oid, 'TRUNCATE')`, expect 0 since migration 272 |
 
 ---
 
@@ -618,7 +627,7 @@ event, because the next operator has no way to know whether it was safe.
 
 ## Conventions register
 
-Twenty-six conventions. Repeatedly, the highest-yield defect on this platform has been two writers
+Twenty-eight conventions. Repeatedly, the highest-yield defect on this platform has been two writers
 each holding a different convention, both correct in isolation, silently
 disagreeing at the seam. Every one of these is now enforced somewhere the
 disagreement becomes an error at write time rather than a discrepancy at read
@@ -652,6 +661,8 @@ time.
 | 24 | Prove by inducing the failure; where the live object cannot be broken, prove on a derived clone and say so | build the clone from the live catalog text by asserted mechanical substitutions, name it outside the population being measured so the proof does not perturb itself, assert every substitution landed and that the branch under test survived, drop it, then label the proof as weaker than an induced one **in writing** | migration 263's `zz__granttier_refusal_clone()`, labelled in `FUNCTION_GRANT_TIERS.md` as the weakest of the three proofs in that document |
 | 25 | An exclusion lever must be visible in the number it shrinks, and a stale exclusion is a violation | a checker that supports exclusions publishes the full population, the excluded count and the excluded names, asserts the partition `population = measured + excluded` in its own body, and treats an exclusion naming nothing real as a violation rather than a curiosity | `tf_guard_detection_audit` `reachable_total` / `exempted_total` / `exempted_fns` / `stale_exemption_total`, gating since migration 265, surfaced on `AC-GUARDREG-023` since migration 267, proved by a planted stale exemption |
 | 26 | A refusal must cover every input the checker reads, and every consumer of a refusal must listen to it | a checker's completeness guard names all of its own inputs and says which are missing; on the consuming side, a payload carrying `ok: false` becomes null, never zero, so the control reads `attention` rather than `passing` | `tf_function_safety_audit` `missing_signals` across all five signal classes since migration 268; all six consumers in `tf_controls_evaluate` gated on `coalesce(payload->>'ok','false') <> 'true'` since migration 269, verified by a count of the idiom in the patched body |
+| 27 | A table a checker reads must refuse to hold a row the checker cannot verify | the register carries a `BEFORE INSERT OR UPDATE` validator that resolves every row against the live catalog, refuses what cannot exist, and canonicalises what is unambiguously mis-keyed rather than accepting it silently; validators are `SECURITY INVOKER` so hardening one control does not widen another's surface | `tf_function_registry_validate` and `tf_grant_tier_registry_validate` since migration 276, proved by four inductions each asserting the refusal fired **and** fired for the right reason, the fourth replaying a real mis-keyed production row |
+| 28 | A privilege that no policy can constrain is not covered by the policy layer | privileges outside the RLS-evaluated set (`TRUNCATE`, `TRIGGER`, `REFERENCES`, `MAINTAIN`) are revoked from `anon` and `authenticated` on every table, leaving only the four verbs PostgREST uses; unreachability through the current front door is not a reason to hold a privilege | migration 272, live count of tables `TRUNCATE`-able by a client role is 0 of 173, was 172; the scanner axis that would monitor it is open work, see `LEAST_PRIVILEGE_TABLE_GRANTS.md` |
 
 The countermeasure that keeps working is the same every time: express the
 convention in the database, on the *normalised* form of the value, so violation
@@ -1042,11 +1053,67 @@ payload that has lost its `ok` key entirely is treated as a refusal, not as a
 pass. Defaulting the *counter* is only safe once the flag has already been
 honoured.
 
+**The write path with no keyword in it.** Every text-matching classifier on this
+platform decides "does this function mutate?" by looking for `insert`, `update`,
+`delete`, `merge`, `truncate`. For one class of function that question cannot be
+answered from the text at all. A function that `RETURNS trigger` executes inside
+another statement's DML and **its return value is the row that statement writes**.
+The mutation is `new.job_number := ...`. There is no keyword to find, no comment
+hiding it, and no regex that would help.
+
+`tf_assign_job_number` was classified `read` on this basis while rewriting the
+customer-facing identifier of every job the business creates. The fix is not a
+better pattern, it is a different instrument: classify structurally on
+`pg_proc.prorettype = 'pg_catalog.trigger'::regtype`.
+
+The generalisation is worth carrying to the next checker. **Ask of any classifier:
+is there a class of input for which my evidence source is structurally silent?**
+Text matching is the default reflex and it is blind to anything the language
+expresses through typing rather than through statements. See migration 275 and
+`REGISTER_INTEGRITY.md`.
+
+**The register that agrees with itself.** Two independent statements of the truth,
+compared, drift published. Except the second statement was generated from the
+first. `tf_function_registry` was seeded from `tf_function_safety_audit()` output
+at migration 233, so from that day the checker and the register could never
+disagree about anything the checker had been wrong about. `drift_total` read 0 for
+dozens of migrations while three write paths sat declared as reads.
+
+This is the hardest defect in the library to see, because it presents as health.
+Every other entry here shows up as a number behaving oddly. This one shows up as a
+number behaving perfectly.
+
+Two tells. First, **read the rationale strings in any register**: a bulk-seeded
+population will say so, and if it does not, ask where the rows came from. Second,
+**count the independent sources**. If a checker, a register and a control board
+all trace back to one query run once, that is one opinion with three renderings.
+The countermeasure applied at migration 276 was to add a source no checker wrote:
+the catalog itself, consulted by a `BEFORE INSERT OR UPDATE` validator that
+refuses rows the catalog contradicts.
+
+**The declaration with no applier behind it.** `tf_function_grant_tiers` rows are
+supposed to be written through `tf_apply_grant_tier`, which both records the
+intent **and** executes the `revoke`/`grant` statements that realise it. A row
+inserted directly into the table records the intent and changes nothing.
+
+The concurrent agent did exactly this, and compounded it by keying on the bare
+type list `'integer'` rather than the `pg_get_function_identity_arguments` output
+`'p_days integer'`. The rows resolved to no function, counted toward
+`missing_total`, and the live ACL was never touched.
+
+> A register row written by hand instead of through its applier is a declaration
+> with no enforcement behind it and no key discipline in front of it.
+
+Wherever a table is the record of an action rather than a description of a state,
+the table alone cannot be the interface. Either the applier is the only writer, or
+the table validates what direct writers hand it. Migration 276 chose the second,
+because the first cannot be enforced against an agent that has SQL access.
+
 ---
 
 ## The house rules
 
-Thirteen rules, each of which exists because breaking it cost real time.
+Fourteen rules, each of which exists because breaking it cost real time.
 
 **A migration that creates or replaces a function must drive that function in a
 post-check, not inspect it.** Migration 229 in this repo's ordinal series applied
@@ -1205,6 +1272,42 @@ the same null-on-refusal shape.
 The question this rule adds to the other two: **who reads this, and what do they
 do when it says no?** Building a refusal is half the work. A refusal with no
 listener is an unhandled exception with better manners.
+
+**Agreement between a checker and a register it wrote is not corroboration.** The
+fourteenth rule came from turning the eleventh on a fourth checker, and it is the
+one that undermines the previous thirteen if it is not held.
+
+The whole architecture here rests on convention 7: conventions live in tables,
+checkers read the tables. Two independent statements of the truth, compared, and
+a drift count published when they disagree. That only works if the two statements
+are actually independent.
+
+`tf_function_safety_audit` classifies a function as a read or a write by matching
+its body against signal patterns. `tf_function_registry` declares what each
+function is supposed to be. `drift_total` had read 0 for dozens of migrations.
+Then migration 275 fixed a structural blind spot in the classifier, a function
+that `RETURNS trigger` is a write path by construction and contains no DML
+keyword for a pattern sweep to find, and the drift row that appeared carried this
+rationale: **"Baseline classification seeded from `tf_function_safety_audit()` at
+migration 233."**
+
+The register agreed with the checker because the register was populated by the
+checker. Three functions that rewrite production rows had been declared reads, the
+drift checker had been confirming the declaration matched, and both were reading
+from the same mistake. The comparison had been running correctly against a
+duplicate of one opinion.
+
+Seeding a register from a checker is often the only practical way to bootstrap
+one, and it was the right call for eighty-odd functions at migration 233. What
+was missing was any mechanism that could ever disagree. Migration 276's answer is
+to make the register refuse rows the catalog contradicts, which is a third
+statement of the truth and one that no checker wrote. It also makes the seeding
+visible: the rationale string is the only reason this was diagnosable at all, and
+it is now the reason every corrected row says what corrected it.
+
+The question this rule adds: **where did the rows in this register come from, and
+is there anything in this system that could ever tell me they are wrong?** If the
+answer to the second half is "the checker," the drift count is decorative.
 
 ---
 
@@ -1589,15 +1692,16 @@ Read live from the catalog, not counted by hand.
 
 | | Count |
 | --- | --- |
-| Migrations applied | 269 |
-| Base tables in `public` | 171 |
-| Tables with RLS enabled | 171 (100%) |
-| RLS policies | 582 |
-| Functions in `public` (`prokind = 'f'`) | 271 |
-| `tf_*` operator functions | 84 |
-| `tf_*` functions declared in `tf_function_registry` | 84 (100%) |
-| `tf_*` functions with a declared grant tier | 84 (100%) |
-| Declared grant-tier rows | 85 (48 admin / 36 staff / 1 anon) |
+| Migrations applied | 277 |
+| Base tables in `public` | 173 |
+| Tables with RLS enabled | 173 (100%) |
+| RLS policies | 582+ |
+| `tf_*` operator functions | 91 |
+| `tf_*` functions declared in `tf_function_registry` | 91 (100%) |
+| `tf_*` functions with a declared grant tier | 91 (100%) |
+| Declared grant-tier rows | 92 |
+| Tables `TRUNCATE`-able by `anon` or `authenticated` | 0 of 173 (was 172) |
+| Registers with catalog-validating triggers | 2 (`tf_function_registry`, `tf_function_grant_tiers`) |
 | Views | 7 |
 | Enums | 80 |
 | Indexes | 655 |
@@ -1725,7 +1829,9 @@ subject-specific notes beside it in `docs/`:
 - `AUTOMATION_ARMING.md` — the automation registry, the bounding model, the blast-radius predicate contract, the arming sequence and its refusal classes, `CM-NOTEDRIFT-022`
 - `GUARD_DETECTION.md` — how a `SECURITY DEFINER` function is judged guarded, the guard predicate registry, the comment-stripped match, the comments-gated / literals-advisory line, `AC-GUARDREG-023`, and the induced comment-only guard that proves the chain
 - `FUNCTION_SAFETY_AUDIT.md` — the signal-pattern table, `CM-FNDRIFT-018`, the null-that-is-not-false defect closed by migration 268, the unheard refusal channel closed by migration 269, and the written reason `misleading_total` is published but does not gate
-- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`, 258 through 264 with theirs in `FUNCTION_GRANT_TIERS.md`, 265 through 267 with theirs back in `GUARD_DETECTION.md`, and 268 through 269 with theirs in `FUNCTION_SAFETY_AUDIT.md`
+- `REGISTER_INTEGRITY.md` — **the checker that seeded its own oracle.** The trigger-function classifier blind spot closed by migration 275, the seeded-register finding it surfaced, the mis-keyed register row the concurrent agent wrote, the catalog-validating triggers migration 276 attached to both registers, the four inductions that prove each refusal fires for the right reason, and the savepoint-probe technique
+- `LEAST_PRIVILEGE_TABLE_GRANTS.md` — **the privilege RLS does not gate.** Why `TRUNCATE` cannot be constrained by any policy, the 172-of-173 exposure closed by migration 272, the `TRIGGER` / `REFERENCES` / `MAINTAIN` companions, the `supabase_admin` default-ACL residual, the missing scanner axis, and the evidence the hardening held under a later concurrent deploy
+- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`, 258 through 264 with theirs in `FUNCTION_GRANT_TIERS.md`, 265 through 267 with theirs back in `GUARD_DETECTION.md`, 268 through 269 with theirs in `FUNCTION_SAFETY_AUDIT.md`, and 270 through 277 with theirs split across `LEAST_PRIVILEGE_TABLE_GRANTS.md` and `REGISTER_INTEGRITY.md` plus the concurrent-deployment note at the head of the index
 
 Notion carries the same material for non-engineers under **🧭 Operations Hub —
 SOPs & FAQs**, with persona-routed SOPs and FAQs. ClickUp carries the
@@ -2132,6 +2238,56 @@ The sweep continues at `tf_security_scan`, then `tf_access_review`, then
 three checkers already touched in passing here, `tf_automation_note_drift`,
 `tf_boolean_default_hazards` and `tf_automation_out_of_band`, now have listened-to
 refusals but still have no population or empty-input concept of their own.
+
+**Pass 9, 2026-07-25, at migration 276.** Pass 9 did not start where pass 8 said
+it would. A second agent began deploying the Studio Founding Access and Studio
+Analytics features to production while this session was open, and the drift it
+introduced took priority over the planned `tf_security_scan` rebuild. That
+interruption turned out to be the most productive input of the whole sweep: three
+of the four findings below exist only because two authors wrote to the same schema
+without coordinating, which is a permanent condition of this platform and not an
+accident to be cleaned up once.
+
+| Claim carried into this pass | What the catalog said | Resolution |
+| --- | --- | --- |
+| Tenant isolation rests on RLS, and RLS is at 100% | `TRUNCATE` is not evaluated per row, so no policy constrains it. 172 of 173 tables granted `TRUNCATE` to `authenticated`, all 173 granted `TRIGGER`, `REFERENCES` and `MAINTAIN` | migration 272 revoked all four from both client roles. Live count now 0 of 173. Never reachable through PostgREST, which is why it survived |
+| The five new definer functions are feature code, not security surface | `tf_studio_funnel` and `tf_studio_quality_gates` were `SECURITY DEFINER`, executable by `anon` and `authenticated`, unguarded, aggregating `studio_events` whose only `SELECT` policy is `studio_is_staff()` and on which `anon` holds no `SELECT` at all | migration 274 converted both to plpgsql and added the guard idiom, bodies otherwise byte-identical. `gap_total` 10 to 1, `secdef_authenticated_no_guard` 5 to 0 |
+| `tf_function_safety_audit` classifies every function correctly, `drift_total` 0 | three `RETURNS trigger` functions were classified `read`, including `tf_assign_job_number`, which rewrites the job identifier of every job the business creates. A trigger body contains no DML keyword to match | migration 275 classifies structurally on `pg_proc.prorettype`, proved by exact partition. `trigger_writers` published as its own total |
+| `tf_function_registry` independently corroborates the audit | the surfaced drift row read "Baseline classification seeded from `tf_function_safety_audit()` at migration 233". The register was populated by the checker that reads it | migration 276 corrected the class, then attached catalog-validating triggers to both registers so a third source exists that no checker wrote |
+| A register row is a declaration of intent | rows inserted by hand into `tf_function_grant_tiers`, keyed on the bare type list, resolved to no function and applied no ACL | the grant-tier validator canonicalises unambiguous mis-keys and refuses the rest. Induction 4 replays the exact production row |
+| A migration can assert its own end-state | migration 274's first attempt rolled back because the population grew mid-transaction under a concurrent deploy | assert deltas measured inside the transaction; report concurrent arrivals by `raise notice`. Now house practice, applied in 272, 274, 275 and 276 |
+
+Two results from this pass are worth separating from the rest because they change
+how future work should be checked rather than closing a specific hole.
+
+The first is **the savepoint probe**. A PL/pgSQL `BEGIN ... EXCEPTION` block is an
+implicit savepoint, and plain variables are not transactional, so a probe row can
+be inserted into a production table, its post-trigger state captured into
+variables, and the whole thing rolled back by a deliberate `raise` that the
+handler swallows. Live behaviour, zero residue. It is what proved that
+`tf_founding_guard` still fires after its `EXECUTE` privilege was revoked, which
+is counter-intuitive until you know that **Postgres checks `EXECUTE` on a trigger
+function at `CREATE TRIGGER` time, not at fire time**. Every trigger function on
+this platform can therefore be tiered `admin` at no functional cost.
+
+The second is that **the concurrent-deployment problem is now the largest
+unmitigated governance risk in the backend**, larger than any individual finding
+above. Two agents hold DDL rights on one production schema with no lock, no
+advisory alert and no post-deploy drift notification between them. The failures
+observed were benign only because one of the two agents was auditing. Nothing
+structural produced that outcome. Ordinals became unpredictable mid-session, this
+block was drafted as "270 through 273" and is in fact 272, 274, 275 and 276, which
+is why the migration **name** is the only citable identifier.
+
+The sweep resumes at `tf_security_scan`, which is fully drafted and unapplied:
+convert to plpgsql, preserve all twelve payload keys, add `ok`, `errors`,
+`population`, `stale_exemptions` and `integrity_total`, couple the declared axis
+list to the computed axis object with a drift raise, and express the guard axis as
+an explicit partition with a mismatch check. Behind it sit three items this pass
+created rather than closed: a `tables_truncatable_by_client` axis so migration
+272 is monitored and not merely done, a freshness gate on `it_controls.status`
+which remains a cache with no staleness concept, and the deployment-coordination
+decision above.
 
 ---
 

@@ -40,12 +40,16 @@ The payload has fifteen top-level keys. The ones that matter to an operator:
 | `diagnostic_violation_total` | a function documented as a diagnostic that writes | `CM-FNDRIFT-018` |
 | `misleading_total` | a function whose *name* implies a read and which writes | nothing, deliberately, see below |
 | `secret_touchers` | every function that reads or writes the Vault | nothing, it is an inventory |
-| `totals` | `functions`, `reads`, `writers`, `transitive_writers`, `documented_diagnostics` | population, see below |
+| `totals` | `functions`, `reads`, `writers`, `trigger_writers`, `transitive_writers`, `documented_diagnostics` | population, see below |
 
-Live at migration 269: `ok` true, 84 functions, 55 writers, 29 reads, 7
-transitive writers, 20 documented diagnostics, `drift_total` 0,
+Live at migration 276: `ok` true, 91 functions, 60 writers, 31 reads, 5 trigger
+writers, 7 transitive writers, 24 documented diagnostics, `drift_total` 0,
 `undeclared_total` 0, `stale_total` 0, `diagnostic_violation_total` 0,
 `misleading_total` 7, `secret_touchers` 18.
+
+The `trigger_writers` key was added by migration 275 and is described below. It
+is not a subset of `transitive_writers`; a function that `RETURNS trigger` is a
+**structural** write path and is deliberately excluded from the transitive count.
 
 ---
 
@@ -262,6 +266,70 @@ The migration runs three blocks around an `on commit drop` temp table:
 
 ---
 
+## The third defect at migration 275: the write path with no DML in it
+
+Migrations 268 and 269 both closed defects in **how the audit matched text**. The
+defect migration 275 closed is that for one class of function, matching text is
+the wrong instrument entirely.
+
+A function that `RETURNS trigger` is a write path by construction. It executes
+inside another statement's `INSERT`, `UPDATE` or `DELETE`, and its return value
+**is the row that statement writes**. The mutation is the assignment to `new.*`.
+None of the five signal classes above can see it, because there is no `insert`,
+`update`, `delete`, `merge` or `truncate` keyword anywhere in the body.
+
+Three functions were classified `read` on that basis. The clearest is
+`public.tf_assign_job_number()`, attached as `tg_assign_job_number` on
+`public.jobs`, which rewrites the customer-facing job identifier of every job the
+business creates and consumes a sequence doing it. The platform's own safety
+audit called it a read.
+
+The fix classifies **structurally** rather than textually, by reading
+`pg_proc.prorettype` against `pg_catalog.trigger`:
+
+```sql
+  -- in the raw CTE
+  (p.prorettype = 'pg_catalog.trigger'::regtype) as returns_trigger,
+
+  -- in the writers CTE
+  where direct_dml or http_post or vault_write or cron_mutation or returns_trigger
+
+  -- in transitive_only
+  and not b.returns_trigger
+```
+
+There is no regex to defeat and no comment to hide behind, which is the point.
+
+### How migration 275 proved it
+
+By an **exact partition**, not by a direction of travel. Before patching, it
+computed by catalog predicate the precise set of functions that should flip:
+
+```sql
+  select coalesce(array_agg(f->>'name' order by f->>'name'), '{}'::text[])
+    into v_flip_names
+    from jsonb_array_elements(v_base->'functions') f
+    join pg_proc p on p.proname = f->>'name'
+   where p.pronamespace = 'public'::regnamespace
+     and p.prokind = 'f'
+     and p.prorettype = 'pg_catalog.trigger'::regtype
+     and f->>'computed_kind' = 'read';
+```
+
+then required the blast radius to match to the row: `reads` down by exactly that
+count, `writers` up by exactly that count, `transitive_writers` **unmoved**. Every
+non-trigger function is the control group. Had the patch caught anything it should
+not have, the migration would have rolled back.
+
+The one drift row it surfaced, `tf_assign_job_number`, carried a rationale that
+turned it into the more important finding: the register declaring it a read had
+been *seeded from this audit* at migration 233, so the checker and the register
+had been agreeing with each other, wrongly, ever since. That story, and the
+register-validation triggers migration 276 attached in response, are in
+`docs/REGISTER_INTEGRITY.md`.
+
+---
+
 ## `misleading_total` is 7 and gates nothing
 
 Stated here rather than left to be discovered. Seven functions carry names that
@@ -303,8 +371,11 @@ promoted or explained. This one is explained.
 
 ## Related
 
-- `docs/PLATFORM_KNOWLEDGE_BASE.md` — conventions 26, house rule 13, the
-  defect-pattern library, and the Pass 8 verification log
+- `docs/REGISTER_INTEGRITY.md` — the seeded-register finding surfaced by
+  migration 275, and the validation triggers migration 276 attached to
+  `tf_function_registry` and `tf_function_grant_tiers`
+- `docs/PLATFORM_KNOWLEDGE_BASE.md` — conventions 26 through 28, house rules 13
+  and 14, the defect-pattern library, and the Pass 8 and Pass 9 verification logs
 - `docs/GUARD_DETECTION.md` — the sibling checker, and where conventions 24 and
   25 were established
 - `docs/FUNCTION_GRANT_TIERS.md` — where conventions 20 through 23 were

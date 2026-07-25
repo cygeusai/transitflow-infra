@@ -60,6 +60,8 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 
 - [`DEPLOY_COORDINATION.md`](./DEPLOY_COORDINATION.md) — **the risk six consecutive verification passes named and this batch closed.** More than one channel can write DDL to this project: these MCP tools, the Supabase dashboard SQL editor, a direct `psql` session, CI, or a second agent. Nothing serialized them and, worse, nothing recorded them, so an interleaved deploy that corrupted state would have left nothing to reconstruct from. Migrations 310 through 315 build prevention and measurement as two separable things: a `ddl_command_start` event trigger that takes a bounded advisory transaction lock and raises `55P03` naming the holding backend, and a `ddl_command_end` trigger that appends every DDL command to `tf_deploy_log`. Contains: **why the log stamps `clock_timestamp()` and not `now()`** (`now()` is transaction-fixed, so every span would have zero width, no two spans could overlap, and the interleave axis would read 0 for every possible input, which is house rule twenty in a new costume); **the MCP serialization finding**, that two `execute_sql` calls in one tool block are serialized before they reach Postgres, measured at 0.64 s after lock release, so this agent structurally cannot falsify its own guard from inside the harness; **the `pg_cron` backend** that supplied the independent session after `dblink` proved unusable, and the verbatim `55P03` refusal with its DETAIL, HINT and CONTEXT lines; **the migration that proves its own logger** using a trailing `COMMENT`, because `ddl_command_end` fires for `COMMENT`; **the axis that can contradict the other four**, computed from recorded command spans rather than the trigger catalog; **house rule twenty-two**, that a migration writing to `tf_function_registry` must re-evaluate the control register before it commits, discovered when migration 315's assertion caught a stale green covering a live drift that migration 310 had introduced four migrations earlier; and control `CM-DEPLOY-029`
 
+- [`SIGNAL_WIRING_ENFORCEMENT.md`](./SIGNAL_WIRING_ENFORCEMENT.md) — **a true premise carried a false conclusion for two batches.** Convention 33's third obligation, wire the new checker's signal into a control, was written off as unenforceable because "wire its signal into a control" has no single catalog fact testable at commit time. The premise is true. The conclusion does not follow, because the obligation does not need **one** fact, it needs **three**, and all three are catalog facts: the function's name is a key in `public.tf_controls_signal_roster()`, `pg_get_functiondef(public.tf_controls_evaluate)` contains `public.<proname>()`, and some `public.it_controls` row has `signal` containing the proname. Migrations 316 through 320 close it. Contains: **the catalog definition of a checker** (a `public.tf_*` function of `prokind='f'` whose definition text contains the literal `'axes',`, which is a catalog fact rather than self-declared intent, and whose trailing comma pins the match to a `jsonb_build_object` key position rather than to prose), and the argument for why "whether the consumer reads a counter out of it" is the right test for placing a **known** function on the roster and useless as an enforcement predicate because it is circular; **the orphan axis** added by migration 317, which separates a roster of thirteen against a population of thirteen from a roster of thirteen against a population of nineteen, two situations that produced identical output before it; **the enqueue-then-test-at-COMMIT gate** of migration 318, reusing the deferred constraint trigger idiom from 307 but re-testing all three facts at the transaction boundary so the queue is never trusted; **the retained falsifiability proof** in migration 319, which catches `check_violation` specifically rather than `others`; **the residue correction** in migration 316, where a pending-queue row for an obligation that has since been satisfied is population, not debt, so residue must be the **unmet** subset and the raw queue count is published separately as non-gating; the reason 320 could not be split, and its `wiring_queue_total >= 1` assertion proving the enforcement observed its own author; and **house rule twenty-three**, that an assertion's failure path is code, and untested code, because plpgsql does not resolve identifiers inside a branch it never executes, so an assertion whose failure path is broken passes its success path in total silence. Control `CM-SIGWIRE-030`
+
 ## Interactive artifacts (this folder)
 Self-contained HTML. Open directly in a browser, no build step, no network.
 - [`COMMAND_CENTER.html`](./COMMAND_CENTER.html) — executive command center
@@ -86,7 +88,24 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
   or the failure it exists to surface silences it.
 - Creating a `tf_*` function carries three obligations in the same migration:
   apply a grant tier, declare it in `tf_function_registry`, and wire its signal
-  into a control. Only the first is structurally enforced today.
+  into a control. **All three are structurally enforced as of migration 320**,
+  and none of the three has an exemption lever. The grant tier is enforced by
+  `tf_apply_grant_tier` and the tier-coverage gate; the registry declaration is
+  enforced at `COMMIT` by `tf_require_function_declaration` since migration 307;
+  the signal wiring is enforced at `COMMIT` by `tf_require_signal_wiring` since
+  migration 318, against three catalog facts, not one. See
+  `SIGNAL_WIRING_ENFORCEMENT.md`.
+- An assertion's failure path is code, and untested code. plpgsql parses a
+  function body for syntax at creation time but resolves identifiers at
+  execution time, per statement, so a branch that is never taken is never
+  resolved. An assertion whose failure path references an undefined name passes
+  its success path in total silence. Every refusal in this repository is a
+  branch that has never run. Read failure paths as carefully as success paths,
+  and where practical, force the branch once.
+- The safe default for a `coalesce` inside an assertion is the **failing**
+  value, never the passing one. `coalesce((v_j->>'gap_total')::int, 0)` reads a
+  missing key as healthy, so a renamed or absent key manufactures a pass.
+  Default to a sentinel that cannot be mistaken for success.
 - A migration that touches the control register asserts the register's
   **aggregate** state before it commits. A per-row assertion cannot see a
   cross-control regression.

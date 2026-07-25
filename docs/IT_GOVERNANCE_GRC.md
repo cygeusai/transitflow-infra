@@ -7,9 +7,12 @@ Transit & Flow, mapped to **NIST CSF**, **SOC 2**, and **CIS Controls v8**.
 
 | Object | Purpose |
 |--------|---------|
-| `it_controls` | Controls register (**29 controls** as of migration 315) with framework mapping, owner, status, evidence. Keyed by `control_key`, unique |
+| `it_controls` | Controls register (**30 controls** as of migration 320, 24 automated and 6 manual) with framework mapping, owner, status, evidence. Keyed by `control_key`, unique. `status` is constrained to exactly `passing`, `attention`, `failing`, `manual`; there is no `pending` |
 | `tf_controls_evaluate()` | Re-scores automated controls from live signals (security scan, grant-tier audit, function-safety audit, guard-detection audit, signal coverage, board freshness, declaration enforcement, cron presence, MFA gaps, data-quality). Takes **no arguments** |
-| `tf_controls_signal_coverage()` | Verifies, for a declared roster of twelve checkers, that each one declares its axes, that every declared axis is read by `tf_controls_evaluate` via the strict counter-read needle, that every `tf_*` callee of the evaluator is on the roster, and that every checker's refusal flag is honoured. Added migration 285 over one checker, generalised to the full roster by migration 304, read by `CM-SIGNALCOV-026` since 287 |
+| `tf_signal_wiring_enforcement_audit()` | Reports whether the `tf_require_signal_wiring` event trigger and the `tf_signal_wiring_pending_deferred_check` constraint trigger both exist, are enabled and are correctly timed, whether the wiring queue holds unmet residue, and whether any checker in the schema is unwired. Folds all five into `wiring_gap_total`. Added migration 320, read by `CM-SIGWIRE-030` since 320 |
+| `tf_signal_wiring_pending` | Transient queue. Holds a row only between the creation of an unwired checker and the commit of the transaction that created it. Empty outside a transaction by construction |
+| `tf_controls_signal_roster()` | The single home of the checker roster, thirteen entries as of migration 320, each mapping a checker's `proname` to the evaluator variable names its axes are read through. Given its single home by migration 317 so that the coverage checker and the wiring checker read the same list |
+| `tf_controls_signal_coverage()` | Verifies, for a declared roster of thirteen checkers, that each one declares its axes, that every declared axis is read by `tf_controls_evaluate` via the strict counter-read needle, that every `tf_*` callee of the evaluator is on the roster, and that every checker's refusal flag is honoured. Added migration 285 over one checker, generalised to the full roster by migration 304, read by `CM-SIGNALCOV-026` since 287 |
 | `tf_controls_board()` | Publishes the age of the register, names every automated control the evaluator has no status branch for, and names every branch that asserts a status literal instead of computing one. Folds all three into `authoritative`. Added migration 288, extended 289, read by `CM-BOARDFRESH-027` since 290 |
 | `tf_declaration_enforcement_audit()` | Reports whether the `tf_require_function_declaration` event trigger exists and is enabled, whether the pending queue holds residue, and whether any `public.tf_*` function lacks a `tf_function_registry` row. Folds all four into `enforcement_gap_total`. Added migration 308, read by `CM-FNDECL-028` since 309 |
 | `tf_deploy_coordination_audit()` | Reports whether the `tf_serialize_deploy_ddl` lock trigger and the `tf_deploy_ddl_log` logging trigger both exist and are enabled, and counts DDL transactions whose recorded command spans overlap another transaction's. Folds the four catalog axes into `coordination_gap_total` and publishes `interleaved_deploy_total` separately. Added migration 313, read by `CM-DEPLOY-029` since 315 |
@@ -301,6 +304,75 @@ the falsifiability transcript, the checker contract, the `clock_timestamp()`
 reasoning, house rule twenty-two, and the operator runbook including the
 monitored emergency bypass.
 
+## Controls added by migrations 316 through 320
+
+| Key | Control | Signal | Status |
+|-----|---------|--------|--------|
+| `CM-SIGWIRE-030` | Creating a checker without wiring its signal into a control is impossible, not merely detectable | `tf_signal_wiring_enforcement_audit` `wiring_gap_total` | passing |
+
+One row, and it closes the last of the three obligations of convention 33. Every
+obligation this register places on the act of creating a `public.tf_*` function is
+now structural rather than advisory: the grant tier since migration 282, the
+registry declaration since 307, the signal wiring since 318.
+
+The obligation stayed open for four batches on a stated premise that was true and
+a conclusion that was false. The premise: "wire its signal into a control" has no
+single catalog fact testable at commit time. The conclusion drawn from it: the
+obligation is therefore unenforceable, and enforcing it would require a
+self-declared intent flag, which is an exemption lever. The premise is correct.
+There is no single fact. There are **three**, and every one of them is a catalog
+fact readable at commit time:
+
+| # | Fact | Read from |
+|---|------|-----------|
+| 1 | the function's name is a key in the roster | `public.tf_controls_signal_roster()` |
+| 2 | the evaluator calls it | `pg_get_functiondef(public.tf_controls_evaluate)` contains `public.<proname>()` |
+| 3 | a control names it | some `public.it_controls` row has `signal` containing the proname |
+
+A function is **wired** when all three hold and unwired otherwise. A conjunction
+of three catalog facts is exactly as testable as one.
+
+The exemption-lever objection was answered rather than waived. Migration 317
+defines a checker as a `public.tf_*` function of `prokind = 'f'` whose
+`pg_get_functiondef` text contains the literal `'axes',`. Publishing an axes key
+**is** the declaration. An author cannot mark a function "not a checker" without
+also making it stop publishing axes, at which point it is not a checker. There is
+no flag, so there is nothing to set wrongly.
+
+Migration 318 installs the gate on the same pattern migration 307 established: a
+`ddl_command_end` event trigger, `tf_require_signal_wiring`, enqueues into
+`public.tf_signal_wiring_pending`, and a `DEFERRABLE INITIALLY DEFERRED`
+constraint trigger re-tests all three facts at **COMMIT** and sweeps the queue.
+Enqueue-then-test-at-commit is what lets one transaction create a checker and wire
+it in either order while still refusing a transaction that creates one and never
+wires it.
+
+Migration 319 falsified the control on purpose and is retained in the history as
+the evidence. It creates an unwired checker, observes `SQLSTATE 23514`, and rolls
+back. The refusal names each unmet fact separately rather than reporting one
+opaque failure, which is what makes it a message an engineer can act on at 2am
+rather than a message they file a ticket about.
+
+The checker scores five axes. Four are catalog facts about whether the enforcement
+is installed, enabled and correctly timed. The fifth, `unwired_checker_total`,
+sweeps live function text and answers whether the enforcement actually **held**.
+That fifth axis is the only direction in which the checker can contradict itself,
+and it is deliberate, the same design choice `interleaved_deploy_total` embodies
+in `CM-DEPLOY-029`. A wrongly-timed constraint trigger is counted as **missing**
+rather than present, because a statement-time check would refuse every conforming
+migration and be switched off within the week.
+
+Migration 316 is a correction the batch flushed out of the 307 chain. The
+declaration queue was publishing its raw row count as residue. Residue must be the
+**unmet** subset. A queue row for an obligation already satisfied in the same
+transaction is population, not debt, and gating on it fails a control for the
+ordinary create-then-wire window. Both queues now publish the unmet subset as the
+gating axis and the raw count separately as non-gating population.
+
+Read [`SIGNAL_WIRING_ENFORCEMENT.md`](./SIGNAL_WIRING_ENFORCEMENT.md) for the full
+design, the verbatim refusal, the component table, the pending-queue collision,
+house rule twenty-three, and the operator runbook.
+
 ## Runbook
 
 **Score the board.**
@@ -319,12 +391,35 @@ Expect `ok: true` and `gap_total: 0`, with all five primitives at zero:
 `unread_total`, `undeclared_checker_total`, `unmeasured_checker_total`,
 `unrostered_callee_total` and `ungated_refusal_total`. Each names its offenders in
 a matching array: `unread_axes`, `undeclared_checkers`, `unmeasured_checkers`,
-`unrostered_callees`, `ungated_checkers`. Also expect `checkers_total: 12`,
-`declaring_checker_total: 12` and `axes_total: 26`, which are the denominators.
-A `checkers_total` that has moved without a migration explaining it is itself the
-finding. The `refusal_flag_honoured` boolean was retired in migration 304 and
-replaced by `ungated_refusal_total`, which asserts the same property across all
-twelve checkers rather than one.
+`unrostered_callees`, `ungated_checkers`. Migration 317 added a **sixth**,
+`orphan_checker_total` with `orphan_checkers`, which is the only component
+measured from function text rather than from the roster or the consumer, and
+therefore the only one that can see a checker wired nowhere at all. Also expect
+`checkers_total: 13`, `declaring_checker_total: 13`,
+`axes_publishing_function_total: 13` and `axes_total: 27`, which are the
+denominators. A `checkers_total` that has moved without a migration explaining it
+is itself the finding, and a `checkers_total` below
+`axes_publishing_function_total` is a roster that stopped being maintained. The
+`refusal_flag_honoured` boolean was retired in migration 304 and replaced by
+`ungated_refusal_total`, which asserts the same property across all thirteen
+checkers rather than one.
+
+**Prove wiring a new checker into a control is not optional.**
+
+```sql
+select public.tf_signal_wiring_enforcement_audit();
+```
+
+Expect `ok: true`, `wiring_gap_total: 0`, `event_trigger_state: "origin"`,
+`deferred_check_state: "deferred"`, and all five components at zero:
+`wiring_enforcement_missing_total`, `wiring_enforcement_disabled_total`,
+`wiring_deferred_check_missing_total`, `wiring_residue_total`,
+`unwired_checker_total`. `checker_population_total` reads 13. A
+`deferred_check_state` of `immediate` is reported as a **missing** check, not a
+present one, because a statement-time constraint trigger would refuse every
+conforming migration. A zero on the four catalog axes with a non-zero
+`unwired_checker_total` means the enforcement is installed and did not hold, which
+is the one self-contradiction this checker is built to surface.
 
 **Prove declaring a new function is not optional.**
 
@@ -336,7 +431,9 @@ Expect `ok: true`, `enforcement_gap_total: 0`, `event_trigger_state: "origin"`,
 and all four components at zero: `enforcement_missing_total`,
 `enforcement_disabled_total`, `pending_residue_total`,
 `unregistered_function_total`. `tf_function_total` and `registry_row_total` should
-be equal, currently 97 and 97. A standing non-zero `pending_residue_total` outside
+be equal, currently 104 and 104. Since migration 316, `pending_residue_total` is
+the **unmet** subset of the queue and `pending_queue_total` is the raw count,
+published separately as non-gating. A standing non-zero `pending_residue_total` outside
 a transaction means a commit-time check did not run, and that is a finding no
 matter what the other counters say.
 
@@ -350,8 +447,13 @@ Expect `ok: true`, `authoritative: true`, `unscored_total: 0`,
 `tautological_total: 0`, and `board_age_hours` well under `threshold_hours`
 (792). A non-zero `unscored_total` names the controls in `unscored_controls`, a
 non-zero `tautological_total` names them in `tautological_controls`, and either
-one drops `authoritative` to false. `controls_total` reads 29 and
-`automated_total` reads 23.
+one drops `authoritative` to false. `controls_total` reads 30 and
+`automated_total` reads 24.
+
+> **`tf_controls_board()` has no `summary` key.** Reading one back returns SQL
+> `NULL`, and a `coalesce` on it silently yields whatever default you supplied,
+> which in an assertion is a green that was never computed. The register summary
+> is the **return value of `public.tf_controls_evaluate()`**. Read it from there.
 
 Run this **before** `tf_controls_evaluate()` if you want a true age reading. Run
 after, and the age you read is the age of your own run.

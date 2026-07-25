@@ -24,7 +24,10 @@ callees, zero refusal-ungated checkers.
 > ten-and-twenty-four numbers throughout this document are the state at the close
 > of migration 306, which is what the reasoning below was worked out against. For
 > current figures read the checker, not this file. See
-> [`DECLARATION_ENFORCEMENT.md`](./DECLARATION_ENFORCEMENT.md).
+> [`DECLARATION_ENFORCEMENT.md`](./DECLARATION_ENFORCEMENT.md). Migration 320
+> added `tf_signal_wiring_enforcement_audit` as the thirteenth, taking the live
+> figures to **thirteen checkers and twenty-seven axes**, still zero unread. See
+> [`SIGNAL_WIRING_ENFORCEMENT.md`](./SIGNAL_WIRING_ENFORCEMENT.md).
 
 ---
 
@@ -282,6 +285,42 @@ prevent. The roster was corrected to ten before it was written into the generali
 checker. Migration 303 gave `tf_controls_board` its axes via a three-anchor
 asserted textual splice.
 
+#### The catalog definition, migration 317
+
+The finding above is correct and it is also incomplete, and the gap between the
+two is what kept obligation three of convention 33 open for four batches.
+
+"Whether the consumer reads a counter out of it" is the right test for deciding
+whether a **known** function belongs on the roster. It is useless as an
+enforcement predicate, because it is circular. A brand-new function that nobody
+reads yet fails that test by construction, and a gate built on it would refuse
+every checker at the moment of its creation and never let one be born. Worse, the
+obvious escape, letting the migration declare "this is a checker" or "this is
+not", hands the author an exemption lever of exactly the kind migration 265 spent
+a whole batch closing.
+
+Migration 317 supplies the second, non-circular definition:
+
+> A **checker** is a `public.tf_*` function of `prokind = 'f'` whose
+> `pg_get_functiondef` text contains the literal `'axes',`.
+
+That is a **catalog fact about the function itself**, independent of any consumer,
+available the instant the function exists, and not settable by the author to
+"exempt" without the author also ceasing to publish axes. Publishing an axes key
+*is* the declaration. There is no separate claim to falsify.
+
+The two definitions do not compete, they compose. The consumer-read test decides
+whether a rostered checker is genuinely wired, which is what
+`tf_controls_signal_coverage` measures. The catalog test decides whether an
+arbitrary new function is subject to the wiring obligation at all, which is what
+the commit-time gate needs. Read the full argument in
+[`SIGNAL_WIRING_ENFORCEMENT.md`](./SIGNAL_WIRING_ENFORCEMENT.md).
+
+The literal is `'axes',` with the trailing comma, not the bare word `axes`. The
+comma is what pins the match to a `jsonb_build_object` key position rather than to
+any prose mentioning axes in a comment or an evidence string. It is the same
+discipline as the strict counter-read needle, applied in the other direction.
+
 ### The undeclared denominator, restated
 
 A checker publishing a gap count with no population statement cannot distinguish
@@ -415,8 +454,9 @@ control register asserted the register's aggregate state before it committed:
 
 **306 migrations applied. 27 controls: 24 passing, 3 attention, 0 failing.**
 (Migrations 307 through 309 subsequently took this to **28 controls: 25 passing,
-3 attention, 0 failing**, and migrations 310 through 315 to **29 controls: 26
-passing, 3 attention, 0 failing**.)
+3 attention, 0 failing**, migrations 310 through 315 to **29 controls: 26
+passing, 3 attention, 0 failing**, and migrations 316 through 320 to **30
+controls: 27 passing, 3 attention, 0 failing**.)
 
 The three attention controls are `AC-MFA-003`, `AC-PRIV-002` and `DP-PITR-007`. All
 three are owner actions outside the database, tracked in ClickUp, and none are
@@ -430,6 +470,12 @@ blocked by anything in this batch.
 a `tf_*` function without a `tf_function_registry` row. An event trigger on
 `ddl_command_end` would close it. This remains the cheapest available hardening
 win.
+
+> **Closed.** Migration 307 installed exactly that event trigger, plus the
+> deferred constraint trigger the design turned out to require. Migration 318 did
+> the same for obligation three. All three obligations of convention 33 are now
+> structural. See [`DECLARATION_ENFORCEMENT.md`](./DECLARATION_ENFORCEMENT.md) and
+> [`SIGNAL_WIRING_ENFORCEMENT.md`](./SIGNAL_WIRING_ENFORCEMENT.md).
 
 **The default-privilege residual.** The `supabase_admin`-owned default ACL for
 public tables still reads `anon=arwdDxtm`. Migration 283 monitors the symptom. The

@@ -284,6 +284,15 @@ enforced at creation time.
 | Declare it in `tf_function_registry` | No | `tf_function_safety_audit` `undeclared_total` |
 | Wire its signal into a control | No | `tf_controls_signal_coverage` (scan axes only) |
 
+> **All three are now enforced at creation time.** The table above is a dated
+> record of the state at the close of this batch. Obligation two became structural
+> at migration 307, see [`DECLARATION_ENFORCEMENT.md`](./DECLARATION_ENFORCEMENT.md).
+> Obligation three became structural at migration 318, see
+> [`SIGNAL_WIRING_ENFORCEMENT.md`](./SIGNAL_WIRING_ENFORCEMENT.md). The "No"
+> column is empty as of migration 320. The detectors named in the third column
+> all remain, because a gate that cannot be measured is a gate nobody can prove
+> is still closed.
+
 Obligation two has a detector and no gate. That turned out to be acceptable,
 because the detector fired within one migration of the omission. But it only
 fired because migration 287 asserted **no control is left failing** inside its
@@ -495,7 +504,43 @@ control now publishes its own denominator so a reader can tell ten-of-ten from
 one-of-one. Migration 309 later added an eleventh checker,
 `tf_declaration_enforcement_audit`, and migration 315 a twelfth,
 `tf_deploy_coordination_audit`, taking the live roster to **twelve checkers and
-twenty-six axes**, still zero unread.
+twenty-six axes**, still zero unread. Migration 320 added a thirteenth,
+`tf_signal_wiring_enforcement_audit`. **The live roster is thirteen checkers and
+twenty-seven axes, zero unread.**
+
+### The orphan axis, migration 317
+
+Every component this document describes shares a blind spot, and it took the
+signal-wiring batch to name it. `unread_total`, `undeclared_checker_total`,
+`unmeasured_checker_total`, `unrostered_callee_total` and `ungated_refusal_total`
+are all measured **from the roster or from the consumer**. Each of them can only
+see a checker that is already wired somewhere. A function that publishes an axes
+key and appears on no roster and is called by no consumer is invisible to all
+five, and it is precisely the failure obligation three exists to prevent.
+
+Migration 317 adds `orphan_checker_total`, measured from **function text**:
+
+> `orphan_checker_total` is measured from function text, not from the roster and
+> not from the consumer. A function that publishes an axes key is a checker by
+> construction, so a function that publishes one and is on no roster is a checker
+> nobody consumes. The other five components can only see checkers that are
+> already wired somewhere; this one sees the ones that are wired nowhere, which is
+> the direction obligation three of convention 33 was blind in.
+
+It carries a companion non-gating population, `axes_publishing_function_total`,
+every `public.tf_*` function whose text publishes an axes key whether rostered or
+not. The two together are what separates a clean roster from a **short** one. A
+roster of thirteen against a population of thirteen is clean. A roster of thirteen
+against a population of nineteen is a roster that stopped being maintained, and
+before 317 those two situations produced identical output.
+
+The test is textual and will count a function that merely contains the literal
+`'axes',` without being a checker. That is a false positive the roster resolves in
+one line, and it is the cheaper error to make. A detector that under-reports
+orphans is worthless. A detector that over-reports them costs one roster edit.
+
+Live: `orphan_checker_total 0`, `axes_publishing_function_total 13`,
+`checkers_total 13`.
 
 **Why declaration beats inspection.** Inspection cannot distinguish a **finding**
 from a **population**. `tf_automation_out_of_band` publishes `enabled_total`, the
@@ -555,7 +600,10 @@ declare-on-every-success-path rule, is in
 - `docs/CONTROL_BOARD_FRESHNESS.md` — migrations 288 through 290, which close
   this document's freshness item and add the two axes that ask whether a control
   is genuinely scored at all
-- `docs/IT_GOVERNANCE_GRC.md` — the control register, now 27 rows
+- `docs/SIGNAL_WIRING_ENFORCEMENT.md` — migrations 316 through 320, which turn
+  this document's third obligation from detected into impossible, and add the
+  orphan axis this document's detector was blind without
+- `docs/IT_GOVERNANCE_GRC.md` — the control register, now 30 rows
 - `docs/REGISTER_INTEGRITY.md` — why the coverage checker reads the catalog
   rather than a register
 - `docs/FUNCTION_GRANT_TIERS.md` — `tf_apply_grant_tier` and the creation

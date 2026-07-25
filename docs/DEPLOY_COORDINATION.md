@@ -605,6 +605,11 @@ concurrent authors.
 
 ## What this batch did not close
 
+> **Closed by migrations 316 through 320**, immediately after this batch. The
+> paragraph below is retained as the dated record of the last time obligation
+> three was open, and because the reasoning in it is where the error was. Read
+> [`SIGNAL_WIRING_ENFORCEMENT.md`](./SIGNAL_WIRING_ENFORCEMENT.md).
+
 **Obligation three of convention 33** remains the oldest structural gap.
 Nothing prevents a migration from creating a checker and never wiring its signal
 into a control. `tf_controls_signal_coverage` finds it afterwards, across a
@@ -614,6 +619,18 @@ recorded in `DECLARATION_ENFORCEMENT.md`: "wire its signal into a control" has n
 single catalog fact testable at commit time, and a self-declared intent flag
 would be an exemption lever of exactly the kind migration 265 spent a batch
 closing.
+
+> **Where that reasoning went wrong.** The premise is true and the conclusion does
+> not follow. There is no single catalog fact, and there are **three**:
+> membership in `tf_controls_signal_roster()`, a `public.<proname>()` call inside
+> `pg_get_functiondef(public.tf_controls_evaluate)`, and an `it_controls` row
+> whose `signal` names the function. A conjunction is as testable at commit time
+> as a singleton. The self-declared-intent objection was answered rather than
+> waived: migration 317 defines a checker as a `public.tf_*` function of
+> `prokind = 'f'` whose definition text contains the literal `'axes',`, which is a
+> catalog fact and not a claim. The gate shipped in migration 318 on the same
+> queue-plus-deferred-trigger pattern this document's predecessor established, and
+> `CM-SIGWIRE-030` reads it.
 
 **The deploy log has no retention policy.** It grows one row per DDL command
 forever. At current volume that is trivial, and a partition or a rolling delete
@@ -642,4 +659,7 @@ is not a gap worth closing until there is more than one production project.
   here
 - [`FUNCTION_SAFETY_AUDIT.md`](./FUNCTION_SAFETY_AUDIT.md) — `declared_kind`,
   computed kind, and the drift detector that caught migration 310
+- [`SIGNAL_WIRING_ENFORCEMENT.md`](./SIGNAL_WIRING_ENFORCEMENT.md) — migrations
+  316 through 320, which close the obligation-three item this document left open,
+  and house rule twenty-three
 - [`IT_GOVERNANCE_GRC.md`](./IT_GOVERNANCE_GRC.md) — the full control register

@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (315 migrations
+The full, ordered migration history of the Transit & Flow backend (320 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -198,6 +198,84 @@ of what exists so nothing is silently dropped.
 | 313 | 20260725173532 | deploy_coordination_audit_checker |
 | 314 | 20260725174503 | reconcile_ddl_serialize_declaration |
 | 315 | 20260725174600 | deploy_coordination_control_and_roster |
+| 316 | 20260725180906 | declaration_pending_residue_is_unmet_only |
+| 317 | 20260725181016 | signal_roster_single_home_and_orphan_axis |
+| 318 | 20260725181758 | require_signal_wiring_at_commit |
+| 319 | 20260725181907 | prove_signal_wiring_refusal |
+| 320 | 20260725183125 | signal_wiring_checker_and_control |
+
+> **Migrations 316 through 320 are one change**, and they close **obligation
+> three of convention 33**, the last of the three obligations of creating a
+> `tf_*` function to remain unenforced. Obligation one, the registry row, has been
+> enforced at commit since migration 307. Obligation two, the grant tier, has been
+> enforced since the grant-tier coverage batch. Obligation three, wire its signal
+> into a control, was recorded as unenforceable in a prior verification log on the
+> stated premise that it "has no single catalog fact testable at commit time."
+> That premise was correct and the conclusion drawn from it was wrong. It has no
+> *single* fact. It has **three**, and all three are catalog facts testable at
+> commit time: the function's name is a key in
+> `public.tf_controls_signal_roster()`, the text of
+> `pg_get_functiondef(public.tf_controls_evaluate)` contains `public.<proname>()`,
+> and at least one `public.it_controls` row carries a `signal` naming it. A
+> function is wired when all three hold, and unwired otherwise.
+>
+> **Migration 317 supplies the definition the whole batch stands on.** A checker
+> is not a function that says it is a checker. A checker is a `public.tf_*`
+> function of `prokind = 'f'` whose `pg_get_functiondef` text contains the literal
+> `'axes',`. That is a catalog fact rather than self-declared intent, which is the
+> only kind of fact convention 21 permits an instrument to rest on. 317 also gives
+> the roster a single home and adds the orphan axis.
+>
+> **Migration 318 makes the obligation impossible to skip rather than merely
+> detectable**, using the commit-time enforcement pattern established by 307: an
+> event trigger on `ddl_command_end` enqueues the created function into
+> `public.tf_signal_wiring_pending`, and a `CREATE CONSTRAINT TRIGGER ... AFTER
+> INSERT ... DEFERRABLE INITIALLY DEFERRED` fires at COMMIT to re-test all three
+> facts and sweep the queue. Enqueue-then-test-at-commit is what allows a single
+> transaction to create a checker and wire it, in either order, while still
+> refusing a transaction that creates one and never wires it.
+>
+> **Migration 319 is the falsifiability proof and is deliberately retained.** It
+> creates `public.tf_probe_unwired_checker()`, observes the refusal, and rolls
+> back. The verbatim `SQLSTATE 23514` refusal, which names each of the three unmet
+> facts separately rather than reporting a single opaque failure, is transcribed
+> in its header and in the document.
+>
+> **Migration 316 is a correction to the 307 batch that 318 would otherwise have
+> inherited.** The declaration pending queue published its raw row count as
+> residue. Residue must be the **unmet** subset, because a queue row for a
+> function that has since been wired is population, not debt. The raw count is
+> still published, as an explicitly non-gating figure. House rule 22's
+> re-evaluation requirement is what surfaced the collision.
+>
+> **Migration 320 could not be split.** It creates the checker
+> `public.tf_signal_wiring_enforcement_audit()`, and creating a checker is exactly
+> the act 318 now refuses unless the same transaction also wires it. The roster
+> entry, the evaluator splice, the `CM-SIGWIRE-030` control row, the registry row
+> and the grant tier therefore all land in one transaction with the checker, and
+> the batch's most satisfying assertion is 320's own: it requires
+> `wiring_queue_total >= 1` at assertion time, proving the enforcement observed
+> its own author, and the queue reads 0 after commit, proving the deferred sweep
+> ran.
+>
+> **These five files are checked into this directory verbatim** and were verified
+> byte-exact against `supabase_migrations.schema_migrations.statements` by md5
+> before commit. There is **one deliberate, documented divergence**: the applied
+> text of 320 contains a misspelled identifier, `coaleske_placeholder`, inside a
+> `raise exception` on a branch that only executes when
+> `enforcement_gap_total <> 0`. It committed clean because plpgsql does not
+> resolve identifiers inside a branch it never executes. The live schema is
+> unaffected, since no database object contains that text, but a replay onto a
+> fresh database would report `42703` instead of the intended message, so the
+> checked-in file carries the corrected `coalesce(...)` plus an inline comment
+> recording the divergence. That defect produced **house rule twenty-three**: an
+> assertion's failure path is code, and untested code. It also opened the
+> `plpgsql_check` static-analysis workstream.
+>
+> The full design, the three-fact definition, the refusal transcript, the
+> component axis table, the pending-queue collision and the operator runbook are
+> in
+> [`docs/SIGNAL_WIRING_ENFORCEMENT.md`](../../docs/SIGNAL_WIRING_ENFORCEMENT.md).
 
 > **Migrations 310 through 315 are one change**, and they close the item that six
 > consecutive verification passes named the largest unmitigated governance risk in

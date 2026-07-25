@@ -285,6 +285,20 @@ meaning changes depending on who is asking:
 > queue is empty by construction, so a standing non-zero here means a commit-time
 > check did not run.
 
+> **Corrected by migration 316.** As shipped in 308, `pending_residue_total`
+> published the **raw row count** of `public.tf_declaration_pending`. That is
+> wrong, and house rule twenty-two is what surfaced it: when the signal-wiring
+> batch re-evaluated the register mid-transaction, a queue row belonging to a
+> function that had already been declared in the same transaction counted as debt.
+> It is not debt, it is population. Migration 316 redefines the axis as the
+> **unmet subset**, the queue rows whose obligation is still unsatisfied at the
+> moment of measurement, and publishes the raw count separately as an explicitly
+> non-gating population figure. The distinction matters because the gating axis
+> must count only what a human should act on. A queue row for an already-satisfied
+> obligation is something the commit-time sweep is about to delete, not something
+> anyone should be paged for. `tf_signal_wiring_enforcement_audit()` was built to
+> the corrected shape from the start.
+
 That subtlety forced a small piece of discipline in migration 308's own assertion
 block. The migration is itself creating a function, so at assertion time the queue
 legitimately holds exactly one row: its own. The block therefore tolerates exactly
@@ -478,6 +492,27 @@ re-run `tf_controls_evaluate()`. Do not leave it disabled across a deploy.
 
 ## What this batch did not close
 
+> **Superseded.** Everything under this heading was accurate when this batch
+> closed. **Obligation three of convention 33 was closed by migrations 316
+> through 320**, and is now structurally enforced at `COMMIT` by the
+> `tf_require_signal_wiring` event trigger plus the
+> `tf_signal_wiring_pending_deferred_check` constraint trigger, monitored by
+> `tf_signal_wiring_enforcement_audit()` and read by control `CM-SIGWIRE-030`.
+> Read [`SIGNAL_WIRING_ENFORCEMENT.md`](./SIGNAL_WIRING_ENFORCEMENT.md) for what
+> actually shipped.
+>
+> The section is retained rather than deleted because it records the reasoning
+> that kept the gap open, and because that reasoning contains the error worth
+> preserving. The premise below, that "wire its signal into a control" has no
+> single catalog fact testable at commit time, is **true**. The conclusion drawn
+> from it, that the obligation is therefore unenforceable, is **false**. It has no
+> single fact. It has three, and a conjunction of three catalog facts is as
+> testable at commit time as one. The self-declared-intent objection was also
+> correct and was answered rather than ignored: migration 317 defines a checker as
+> a `public.tf_*` function of `prokind = 'f'` whose `pg_get_functiondef` text
+> contains the literal `'axes',`, which is a catalog fact the author cannot set to
+> "not a checker" without ceasing to publish axes. No exemption lever was created.
+
 **Obligation three of convention 33** remains detected rather than structural.
 Nothing prevents a migration from creating a checker and never wiring its signal
 into a control. `tf_controls_signal_coverage` finds it afterwards, across an
@@ -520,3 +555,7 @@ the recommendation: an advisory lock, a deploy log, and a `CM-DEPLOY` control.
   validating trigger, and why a declaration cannot precede its function
 - [`FUNCTION_GRANT_TIERS.md`](./FUNCTION_GRANT_TIERS.md) — obligation one, the only
   one that was already structural
+- [`SIGNAL_WIRING_ENFORCEMENT.md`](./SIGNAL_WIRING_ENFORCEMENT.md) — **obligation
+  three, closed.** The three-fact definition of "wired", the catalog definition of
+  a checker, the `SQLSTATE 23514` refusal transcript, `CM-SIGWIRE-030`, and house
+  rule twenty-three

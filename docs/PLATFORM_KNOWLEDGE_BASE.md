@@ -691,7 +691,7 @@ time.
 | 30 | An exemption must suppress something, or it is a trap | a standing exemption over a function that is already guarded hides the finding the day the guard is removed; staleness is detected by the exact inverse of the axis predicate, published as its own count, escalated into `ok: false`, and refused at write time by a validating trigger that also requires a reason long enough to be a review | `tf_security_scan()` `stale_exemptions` and the `stale_exemptions_present` integrity error since migration 280; two live rows retired by migration 281; `tf_security_scan_exemption_validate` since migration 282, proved by three inductions |
 | 31 | Every declared detection axis has a consumer that renders it | detection without consumption is not a control, it is a log line; the axis list a checker publishes is matched against the **catalog definition** of its consumer, not against a register, and any axis nobody renders is a gap that fails a control of its own | `tf_controls_signal_coverage()` since migration 285, read by `CM-SIGNALCOV-026` since migration 287; generalised from one checker to the full roster by migration 304, live `unread_total 0` over **26 declared axes across 12 checkers** since migration 315. The match is the strict counter-read needle of convention 39, which supersedes the earlier single-quoted-name match |
 | 32 | A checker that reports on refusals is not gated on its own refusal flag | every other consumer treats `ok: false` as null per convention 26, but the checker whose job is to notice unheard refusals must run and report regardless, or the failure it exists to surface is the failure that silences it | `tf_controls_signal_coverage()` is deliberately ungated on the checkers it inspects. The single-checker `refusal_flag_honoured` boolean was retired by migration 304 and replaced by `ungated_refusal_total`, which asserts the property across all twelve rostered checkers in either spelling of the gate idiom; live 0 |
-| 33 | Creating a `tf_*` function carries three obligations in the same migration | apply a grant tier, declare the function in `tf_function_registry`, and wire its signal into a control; the first two are now **structurally enforced**, the third is still detected after the fact | tier enforced and asserted since migration 282, detected by `tf_grant_tier_audit` `uncovered_total`; **declaration enforced at `COMMIT` since migration 307** by the `tf_require_function_declaration` event trigger plus the `tf_declaration_pending_deferred_check` constraint trigger, monitored by `tf_declaration_enforcement_audit` and read by `CM-FNDECL-028` since 309, live `enforcement_gap_total 0` over 100 functions and 100 registry rows; signal wiring still only detected, by `tf_controls_signal_coverage` |
+| 33 | Creating a `tf_*` function carries three obligations in the same migration | apply a grant tier, declare the function in `tf_function_registry`, and wire its signal into a control; **all three are now structurally enforced** | tier enforced and asserted since migration 282, detected by `tf_grant_tier_audit` `uncovered_total`; **declaration enforced at `COMMIT` since migration 307** by the `tf_require_function_declaration` event trigger plus the `tf_declaration_pending_deferred_check` constraint trigger, monitored by `tf_declaration_enforcement_audit` and read by `CM-FNDECL-028` since 309, live `enforcement_gap_total 0` over 104 functions and 104 registry rows; **signal wiring enforced at `COMMIT` since migration 318** by the `tf_require_signal_wiring` event trigger plus the `tf_signal_wiring_pending_deferred_check` constraint trigger, monitored by `tf_signal_wiring_enforcement_audit` and read by `CM-SIGWIRE-030` since 320, live `wiring_gap_total 0` over a checker population of 13, refusal observed verbatim in migration 319. **Wired** is a conjunction of three catalog facts: a key in `tf_controls_signal_roster()`, a `public.<proname>()` call in `pg_get_functiondef(tf_controls_evaluate)`, and an `it_controls.signal` naming it. A **checker** is a `public.tf_*` function of `prokind='f'` whose definition text contains the literal `'axes',`, which is a catalog fact rather than a self-declared intent, so no exemption lever was created |
 | 34 | A stored status is a cache, so publish its age beside it against a stated threshold | a register of judgements with no date on it renders an evaluation from any point in the past as current; the age, the threshold and the cadence that produced the threshold are all published so the freshness claim is falsifiable rather than asserted | `tf_controls_board()` `board_age_hours` / `threshold_hours` / `cadence` since migration 288; threshold 792 hours, the `0 14 1 * *` monthly cadence plus a two-day grace; read by `CM-BOARDFRESH-027` since migration 290 |
 | 35 | A control's status branch must compute a status, never assert one | a branch that reads `then 'passing'` survives every failure it exists to detect; the property worth checking was never whether a branch exists but whether it decides anything, so the register is measured on both axes, controls with no branch at all and controls whose branch asserts a literal | `tf_controls_board()` `unscored_total` since migration 288 and `tautological_total` since migration 289, both parsed out of `pg_get_functiondef` of the evaluator; found `GV-CCM-016` hardcoded to `'passing'` on its first run, fixed in migration 290; live 0 and 0 |
 | 36 | A signal must not be produced by the act of evaluating it | a freshness reading taken after the write it measures is always zero, so the prior state is read and held before anything is stamped, and the evidence string states the ordering so a reader can verify it without the source | `tf_controls_evaluate` calls `tf_controls_board()` in its opening statements since migration 290 and the `CM-BOARDFRESH-027` evidence ends *"Age is measured before this run stamps the board"* |
@@ -734,6 +734,30 @@ because it can be reintroduced in three lines by anyone tidying up an error path
 Recognise it by the shape `exception when others then <counter> := 0`, and by any
 control whose evidence is confident and whose underlying checker nobody has run
 by hand recently.
+
+**The unresolved failure path.** A `raise exception` that references an identifier
+which does not exist, sitting inside a branch that never executes. plpgsql parses
+a function body for syntax at creation time and resolves names at execution time,
+per statement, so the branch is never checked and the function is created,
+committed and reported healthy. Found in migration 320 as `coaleske_placeholder`.
+The output is indistinguishable from a working assertion, and the assertion is
+worth nothing. Recognise it by asking, of any guard, whether its failure branch
+has ever run even once. In a repository where refusals are the whole design, the
+honest answer is almost always no. See house rule twenty-three. The systematic
+countermeasure is `plpgsql_check`, which resolves identifiers in unreachable
+branches; a full-schema scan of this database costs 447 ms.
+
+**The coalesce default that manufactures a pass.** Closely related and more
+common. An assertion reads a key out of a jsonb payload, wraps it in
+`coalesce(..., 0)` to be defensive, and compares it to the expected clean value.
+If the key is absent or misspelled, the read yields SQL `NULL`, the coalesce
+substitutes the passing value, and the assertion certifies a measurement that was
+never taken. **In an assertion, the safe default for a `coalesce` is the FAILING
+value, never the passing one.** `coalesce((v->>'gap_total')::int, -1) <> 0` fails
+loudly on a missing key; `coalesce(..., 0)` passes silently. The live instance
+that taught this: `public.tf_controls_board()` has **no `summary` key**, so an
+assertion reading `v_board->>'summary'` gets `NULL` forever. The register summary
+is the return value of `public.tf_controls_evaluate()`.
 
 **The conditional declaration.** A checker with an early return that bypasses the
 tail where its axes are declared. `tf_automation_out_of_band` returned a
@@ -1334,7 +1358,60 @@ because the first cannot be enforced against an agent that has SQL access.
 
 ## The house rules
 
-Twenty-two rules, each of which exists because breaking it cost real time.
+Twenty-three rules, each of which exists because breaking it cost real time.
+
+**Twenty-three. An assertion's failure path is code, and it is untested code.**
+Found in migration 320, in the worst possible way: the migration committed clean
+and the defect shipped into the immutable migration history.
+
+The assertion was ordinary.
+
+```sql
+if coalesce((v_j->>'enforcement_gap_total')::int, -1) <> 0 then
+  raise exception 'migration 320: enforcement_gap_total is %, expected 0. Payload: %',
+    coaleske_placeholder, v_j::text;
+end if;
+```
+
+`coaleske_placeholder` is not an identifier. It is not a variable, not a column,
+not a function. It is a typo, and it would raise `42703 column
+"coaleske_placeholder" does not exist` the instant that line executed. It never
+executed, because `enforcement_gap_total` was 0, and **plpgsql does not resolve
+identifiers inside a branch it never enters**. The body is parsed for syntax at
+creation time and resolved for names at execution time, per statement. A branch
+that is never taken is never resolved.
+
+So the assertion passed. And it passed on its success path in total silence, which
+is precisely the shape of failure this whole platform is built to refuse: two
+components each doing something reasonable and disagreeing quietly. The migration
+believed it had a gate. It had a gate on one side and a `42703` on the other.
+
+The damage in this instance is bounded. No database object contains that text, so
+the live schema is unaffected; only the `supabase_migrations.schema_migrations`
+row does, and that row is immutable. The checked-in repository copy carries the
+correction plus an inline comment recording the divergence, so a replay onto a
+fresh database reports the intended message instead of a missing-column error.
+
+The general form is worse than the instance. **Every refusal in this repository is
+a branch that has never run.** That is the point of a refusal. It means the entire
+population of failure paths across three hundred and twenty migrations is code
+that was written once, never executed, and assumed correct because the thing it
+guards kept passing. A guard whose failure path is broken is not a weak guard. It
+is not a guard at all, and it is indistinguishable from a working one from the
+outside.
+
+Two countermeasures, and both are required.
+
+Prove the refusal, not just the success. That is the observed-refusal proof
+pattern this platform already uses at the migration level: migration 319 exists
+solely to create an unwired checker, observe `SQLSTATE 23514` and roll back. Where
+a refusal matters, induce it once and transcribe the message.
+
+Run static analysis, because inducing every refusal is not affordable.
+`plpgsql_check` resolves identifiers in **unreachable** branches, which is exactly
+the blind spot. A full-schema scan of this database runs in 447 ms over 119
+functions. That is cheap enough to sit inside the control register rather than in
+a developer's habit, and installing it is the next batch.
 
 **Twenty-two. A migration that writes a row into `tf_function_registry` must
 re-evaluate the control register before it commits.** Found in migration 315,
@@ -2061,15 +2138,22 @@ from public.auto_tickets order by created_at;
 
 ### GRC controls
 
-**29 controls, 26 `passing`, 3 `attention`, 0 `failing`** as of migration 315.
-The three in `attention` are `AC-PRIV-002` (one intentionally anon-exposed
-definer function, carrying a live exemption row that suppresses a real finding),
-`AC-MFA-003` and `DP-PITR-007`, the latter two being owner actions 3 and 4 above.
-Evaluated monthly by `tf-controls-evaluate-monthly`, and on demand by
-`tf_controls_evaluate()`, which is a writer and takes no arguments.
+**30 controls, 27 `passing`, 3 `attention`, 0 `failing`** as of migration 320,
+24 automated and 6 manual. The three in `attention` are `AC-PRIV-002` (one
+intentionally anon-exposed definer function, carrying a live exemption row that
+suppresses a real finding), `AC-MFA-003` and `DP-PITR-007`, the latter two being
+owner actions 3 and 4 above. Evaluated monthly by `tf-controls-evaluate-monthly`,
+and on demand by `tf_controls_evaluate()`, which is a writer and takes no
+arguments.
 
-Six of the 29 are manual and **none of the six has ever been attested**. That is
+Six of the 30 are manual and **none of the six has ever been attested**. That is
 counted rather than assumed, and it is an owner action, not an engineering one.
+
+`it_controls.status` is constrained to exactly four values, verified from
+`pg_get_constraintdef`: `passing`, `attention`, `failing`, `manual`. There is no
+`pending`. Seeding a new automated control that has not been evaluated yet takes
+`attention`, since unmeasured is not clean, and `tf_controls_evaluate()` promotes
+it inside the same transaction.
 
 Before reading any status on this board, read the board itself:
 
@@ -2232,23 +2316,26 @@ Read live from the catalog, not counted by hand.
 
 | | Count |
 | --- | --- |
-| Migrations applied | 277 |
-| Base tables in `public` | 173 |
-| Tables with RLS enabled | 173 (100%) |
-| RLS policies | 582+ |
-| `tf_*` operator functions | 91 |
-| `tf_*` functions declared in `tf_function_registry` | 91 (100%) |
-| `tf_*` functions with a declared grant tier | 91 (100%) |
-| Declared grant-tier rows | 92 |
-| Tables `TRUNCATE`-able by `anon` or `authenticated` | 0 of 173 (was 172) |
+| Migrations applied | 320 |
+| Base tables in `public` | 177 |
+| Tables with RLS enabled | 177 (100%) |
+| RLS policies | 590 |
+| `tf_*` operator functions | 104 |
+| `tf_*` functions declared in `tf_function_registry` | 104 (100%), structurally enforced at `COMMIT` since migration 307 |
+| `tf_*` functions with a declared grant tier | 104 (100%) |
+| Declared grant-tier rows | 105 |
+| Checkers on the signal roster | 13, publishing 27 declared axes, 0 unread, 0 orphan |
+| Checker signal wiring | structurally enforced at `COMMIT` since migration 318, `wiring_gap_total 0` |
+| Tables `TRUNCATE`-able by `anon` or `authenticated` | 0 of 177 |
 | Registers with catalog-validating triggers | 2 (`tf_function_registry`, `tf_function_grant_tiers`) |
+| Event triggers | 11 |
 | Views | 7 |
 | Enums | 80 |
-| Indexes | 655 |
+| Indexes | 669 |
 | Active pg_cron jobs | 37 |
 | Edge functions | 37 |
-| GRC controls | 23 |
-| Controls passing / attention / failing | 21 / 2 / 0 |
+| GRC controls | 30 |
+| Controls passing / attention / failing | 27 / 3 / 0 |
 | Automations registered | 13 |
 | Automations armed | 0 of 13 |
 | Automation registry note drift | 0 |
@@ -2377,6 +2464,7 @@ subject-specific notes beside it in `docs/`:
 - `CHECKER_AXIS_DECLARATION.md` — the checker roster, the three couplings, the strict counter-read needle, house rules nineteen and twenty, and why a checker declares its own axes rather than a detector inferring them
 - `DECLARATION_ENFORCEMENT.md` — **the first control that certifies an impossibility.** The discarded statement-level design and the catalog fact that disproved it, the enqueue-plus-deferred-constraint mechanism, house rule twenty-one, the monitored kill switch, `CM-FNDECL-028`
 - `DEPLOY_COORDINATION.md` — **the risk six passes named and this one closed.** The advisory-lock refusal trigger, the deploy log and why it stamps `clock_timestamp()` rather than `now()`, the MCP serialization finding, the `pg_cron` backend that made the refusal provable, the axis that can contradict the other four, house rule twenty-two, `CM-DEPLOY-029`
+- `SIGNAL_WIRING_ENFORCEMENT.md` — **the last of the three obligations, closed.** Why "no single catalog fact" was true and "therefore unenforceable" was false, the three-fact definition of wired, the catalog definition of a checker that closes the exemption lever, the verbatim `SQLSTATE 23514` refusal, the wrongly-timed-check-counts-as-missing rule, the pending-queue residue correction, house rule twenty-three, `CM-SIGWIRE-030`
 - `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`, 258 through 264 with theirs in `FUNCTION_GRANT_TIERS.md`, 265 through 267 with theirs back in `GUARD_DETECTION.md`, 268 through 269 with theirs in `FUNCTION_SAFETY_AUDIT.md`, and 270 through 277 with theirs split across `LEAST_PRIVILEGE_TABLE_GRANTS.md` and `REGISTER_INTEGRITY.md` plus the concurrent-deployment note at the head of the index
 
 Notion carries the same material for non-engineers under **🧭 Operations Hub —
@@ -3280,6 +3368,99 @@ policy**: it grows unbounded, one row per DDL command, and the overlap query is
 O(n^2) in the window it scans. Neither matters at 41 rows. Both matter at a
 million. The deployment-coordination item that headed this list for six passes is
 closed.
+
+**Pass 16, 2026-07-25, at migration 320.** Two consecutive passes named
+obligation three of convention 33 the oldest structural gap in the chain and both
+declined to close it, on a stated design argument. Pass 16 read the argument
+again and found it half right. The register moved from 29 controls to **30: 27
+passing, 3 attention, 0 failing**, and `CM-SIGWIRE-030` closes the last of the
+three obligations. Every obligation this platform places on the act of creating a
+`public.tf_*` function is now structural.
+
+| Claim carried into this pass | What the catalog said | Resolution |
+| --- | --- | --- |
+| Obligation three is unenforceable because "wire its signal into a control" has no single catalog fact testable at `COMMIT` | the premise is **true** and the conclusion does not follow. There is no single fact and there are three: a key in `tf_controls_signal_roster()`, a `public.<proname>()` call inside `pg_get_functiondef(tf_controls_evaluate)`, and an `it_controls` row whose `signal` names the proname. All three are catalog facts readable at `COMMIT` | a conjunction is as testable as a singleton. Migration 318 tests all three at the transaction boundary and names each unmet one separately in the refusal. **Two passes were spent not closing a gap because the word "single" was doing unexamined work in a sentence** |
+| Enforcing it would need a self-declared intent flag, which is an exemption lever of the kind migration 265 closed | it would not. `prokind` and `pg_get_functiondef` already answer the question. A **checker** is a `public.tf_*` function of `prokind = 'f'` whose definition text contains the literal `'axes',` | migration 317 makes that the definition. Publishing an axes key *is* the declaration, so there is no separate claim to falsify and no flag to set wrongly. The objection was correct and was answered rather than waived. The literal carries the trailing comma so the match pins to a `jsonb_build_object` key position, not to prose |
+| The consumer-read test decides what a checker is, per the migration 304 finding | it decides whether a **known** function belongs on the roster, and it is circular as an enforcement predicate. A brand-new function nobody reads yet fails it by construction, so a gate built on it would refuse every checker at birth | the two definitions compose rather than compete. Consumer-read measures whether a rostered checker is genuinely wired; the catalog definition decides whether an arbitrary new function is subject to the obligation at all |
+| The coverage checker sees every unwired checker | it sees none of them. All five of its components are measured from the roster or from the consumer, so each can only see a checker already wired somewhere. A function publishing axes, on no roster, called by nobody, is invisible to all five | migration 317 adds `orphan_checker_total`, measured from function text, with `axes_publishing_function_total` as its population. A roster of 13 against a population of 13 is clean; a roster of 13 against a population of 19 is a roster that stopped being maintained, and before 317 the two produced identical output |
+| The pending-queue residue axis is correct as shipped in 308 | it published the **raw** row count. House rule twenty-two forced a mid-transaction re-evaluation, and a queue row for a function already declared in the same transaction counted as debt | migration 316: residue is the **unmet subset**, the raw count is republished as non-gating population. Gating on population fails a control for the ordinary create-then-wire window, which is convention 37 in a new costume |
+| Seed the new control with `status = 'pending'` until the evaluator scores it | `it_controls_status_check` allows exactly `passing`, `attention`, `failing`, `manual`. Verified verbatim from `pg_get_constraintdef`. Attempt 1 died on `23514` | seeded `attention`, on the reasoning that an automated control never evaluated is **unmeasured**, not clean. `tf_controls_evaluate()` promoted it to `passing` in the same transaction and the migration's own assertion verified the promotion |
+| Read the register summary out of `tf_controls_board()` | it has **no `summary` key**. The read returns SQL `NULL` and a defensive `coalesce` turns that into whatever default was supplied | the summary is the **return value of `tf_controls_evaluate()`**. Generalised: **in an assertion, the safe default for a `coalesce` is the FAILING value, never the passing one** |
+| The migration's assertion block gates the commit | one branch of it did not. `coaleske_placeholder`, a misspelled identifier inside a `raise exception` that only fires when `enforcement_gap_total <> 0`, committed clean because **plpgsql does not resolve identifiers inside a branch it never executes** | **house rule twenty-three**. The live schema is unaffected, since no database object carries the text; the immutable migration-history row does. The checked-in file carries the correction plus an inline divergence comment. It opened the `plpgsql_check` workstream |
+
+| Verified at the start of this pass | Verified at the end | What was re-read |
+| --- | --- | --- |
+| Migrations 315, conventions 43, house rules 22, controls 29, checkers 12, axes 26 | 320 / 43 / 23 / 30 / 13 / 27 | inventory, conventions register, house rules, defect-pattern library, open register, `IT_GOVERNANCE_GRC.md`, `DECLARATION_ENFORCEMENT.md`, `CHECKER_AXIS_DECLARATION.md`, `CONTROL_SIGNAL_COVERAGE.md`, `DEPLOY_COORDINATION.md`, `MIGRATIONS_INDEX.md`, and a new `SIGNAL_WIRING_ENFORCEMENT.md` |
+
+Live state at 18:45Z, every figure read back out of the database rather than
+inferred from the migration assertions. `tf_controls_evaluate()`: 30 controls, 27
+passing, **0 failing**, 3 attention, 24 automated, 6 manual and all 6 never
+attested. `tf_controls_signal_coverage()`: `ok true`, `gap_total 0`,
+`checkers_total 13`, `declaring_checker_total 13`, `axes_total 27`,
+`axes_publishing_function_total 13`, all six primitives 0 and all six offender
+arrays empty. `tf_signal_wiring_enforcement_audit()`: `ok true`,
+`wiring_gap_total 0`, `event_trigger_state origin`, `deferred_check_state
+deferred`, `checker_population_total 13`, `unwired_checker_total 0`,
+`wiring_residue_total 0`, `wiring_queue_total 0`.
+`tf_declaration_enforcement_audit()`: `ok true`, `enforcement_gap_total 0`,
+`tf_function_total 104`, `registry_row_total 104`. `tf_controls_board()`:
+`ok true`, `authoritative true`, `unscored_total 0`, `tautological_total 0`.
+
+Four results from this pass are worth carrying forward.
+
+The first is that **a design argument is a claim and ages like one**. The sentence
+that kept obligation three open for two passes was written once, was true when
+written, and was re-quoted rather than re-tested in every pass that followed. Its
+load-bearing word was "single", and nobody looked at it. A carried-forward reason
+for not doing something should be re-derived, not re-read, and the cheapest way to
+re-derive it is to ask what the sentence would look like if its strongest word
+were deleted. "Wire its signal into a control has no catalog fact testable at
+commit time" is obviously false, and that is one word away from what the document
+said.
+
+The second is that **an objection can be correct and still not be a blocker**. The
+exemption-lever concern was right: a self-declared "this is not a checker" flag
+would have reproduced exactly the defect migration 265 spent a batch closing. The
+error was treating a valid objection to one implementation as a proof about the
+whole problem. The fix was to find a definition the author cannot lie about,
+which took one `pg_proc` query. Objections narrow the design space. They do not
+close it, and the difference is worth an hour of trying before it is worth a
+paragraph of explaining.
+
+The third is that **every component measured from a register is blind in the same
+direction**. Five coverage primitives, five different questions, one shared
+premise: the thing being measured is already on the list. Nothing on the list can
+tell you what is missing from the list. `orphan_checker_total` had to be measured
+from function text for the same reason `interleaved_deploy_total` had to be
+measured from recorded spans and `tf_function_safety_audit` had to compute kind
+rather than read `declared_kind`. **Ask of every checker on this roster: what is
+its denominator, and where did the denominator come from?** If the answer is a
+register the same subsystem maintains, the checker certifies its own bookkeeping.
+
+The fourth is house rule twenty-three, and it is the most uncomfortable finding on
+this platform to date. **Every refusal in this repository is a branch that has
+never run.** That is what a refusal is for. It means the whole population of
+failure paths across three hundred and twenty migrations is code written once,
+never executed, and believed correct because the thing it guards kept passing. One
+of them was a typo away from being a `42703` instead of a gate, and it shipped,
+and the board stayed green. The observed-refusal proof pattern answers this where
+a refusal matters enough to induce deliberately, as migration 319 does. Static
+analysis answers it everywhere else, and it is affordable: `plpgsql_check` 2.8 is
+available on this project, resolves identifiers in unreachable branches, and scans
+all 119 functions in **447 ms**.
+
+The sweep resumes at **installing `plpgsql_check` and gating on it**. The scan
+already run surfaced 5 errors, 67 warnings and 263 other findings. Triaged, the
+five errors are: two runtime temp tables (`_cust_fix` in `tf_link_revenue`,
+`_merge_map` in `tf_merge_duplicate_customers`) which get plpgsql_check **pragmas
+declaring their shape, not exemptions**, because an exemption is the lever
+migration 265 had to close; two needing investigation (`current_user_role`
+resolving relation `users`, `tf_cx_sequence_sweep` record `l`); and one that looks
+like a genuine defect, `tf_guard_detection_audit` reporting "malformed array
+literal: tf_guard_predicate_registry is empty", which reads as a scalar assigned
+into a `text[]` on some branch. Behind that, the `supabase_admin` default-ACL
+residual, whose symptom migration 283 monitors and whose mechanism is untouched,
+and `tf_deploy_log`'s absent retention policy with its O(n^2) overlap query.
 
 ---
 

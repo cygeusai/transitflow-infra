@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (290 migrations
+The full, ordered migration history of the Transit & Flow backend (306 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -173,6 +173,22 @@ of what exists so nothing is silently dropped.
 | 288 | 20260725154849 | control_board_publishes_its_own_freshness_and_names_the_rows_the_evaluator_never_scores |
 | 289 | 20260725155210 | the_control_board_detects_a_branch_that_asserts_a_pass_instead_of_computing_one |
 | 290 | 20260725155435 | continuous_monitoring_stops_asserting_itself_and_the_board_freshness_control_is_wired |
+| 291 | 20260725161311 | grant_tier_audit_declares_its_detection_axes_and_couples_them_to_a_gap_total |
+| 292 | 20260725161621 | an_axis_is_the_consumption_surface_and_a_rollup_axis_must_assert_it_covers_its_components |
+| 293 | 20260725161748 | function_safety_audit_declares_its_axes_and_every_counter_is_classified_gating_or_not |
+| 294 | 20260725162003 | three_unread_guard_signals_are_wired_into_the_control_and_the_audit_declares_its_axes |
+| 295 | 20260725162341 | automation_note_drift_declares_its_axis_and_the_counter_sweep_widens_beyond_total |
+| 296 | 20260725162359 | verify_295_axis_declaration_consumer_read_and_register_aggregate |
+| 297 | 20260725162807 | data_quality_audit_refuses_by_return_and_runs_for_definer_owned_callers |
+| 298 | 20260725162855 | controls_evaluate_treats_a_refused_data_quality_audit_as_unmeasured_not_clean |
+| 299 | 20260725163121 | system_health_reports_an_unavailable_probe_as_degraded_not_operational |
+| 300 | 20260725163221 | boolean_hazards_and_out_of_band_declare_axes_completing_the_checker_roster |
+| 301 | 20260725163642 | out_of_band_declares_its_axis_on_every_success_path |
+| 302 | 20260725163708 | verify_300_out_of_band_declares_on_every_success_path |
+| 303 | 20260725163930 | controls_board_is_a_checker_and_must_declare_its_axes |
+| 304 | 20260725164220 | signal_coverage_generalises_from_one_checker_to_the_full_roster |
+| 305 | 20260725164252 | evaluator_evidence_for_signal_coverage_reports_the_full_roster |
+| 306 | 20260725164321 | signalcov_control_description_states_the_roster_and_its_denominator |
 
 > **Migrations 270 through 277 were applied by two agents interleaved into one
 > version stream, and that is itself the finding.** Four of these eight (270,
@@ -435,6 +451,75 @@ of what exists so nothing is silently dropped.
 > unpoliced. The reasoning, the assertions and the runbook are in
 > [`docs/SECURITY_SCAN_INTEGRITY.md`](../../docs/SECURITY_SCAN_INTEGRITY.md).
 
+> **Migrations 291 through 306 are one change**, the largest single batch in the
+> history, and it exists because the batch before it proved a principle over a
+> sample of one. 284 through 287 established that detection without consumption
+> is not a control, then built `tf_controls_signal_coverage` to enforce it over a
+> single checker. This batch generalises that to the whole platform: **every
+> checker declares, in machine-readable form, the exact set of signals it expects
+> a control to read**, and the coverage detector tests those declarations against
+> the evaluator for the entire roster. The result is ten checkers, twenty-four
+> declared axes, and zero unread, undeclared, unmeasured, unrostered or
+> refusal-ungated.
+>
+> Declaration replaced inspection because inspection cannot tell a **finding**
+> from a **population**. `tf_automation_out_of_band` publishes `enabled_total` and
+> `out_of_band_total`; only the second is a finding, the first is the denominator.
+> An inspecting detector demands a consumer for both, the platform is permanently
+> one axis short for an artefact reason, and somebody adds a fake control to
+> satisfy the checker. Hence the convention: **an axis is the consumption
+> surface**, a signal a control is expected to READ, not an inventory of
+> everything the checker counts.
+>
+> Each declaring checker got the same three-part tail. **Coupling one**: every
+> declared axis must appear in the payload. **Coupling two**: every non-gating
+> counter must carry a written rationale, which puts "not an axis" on the record
+> as a decision rather than an omission. **Coupling three**: every counter key
+> must be classified as axis, component axis, or explained non-gating, so no
+> future edit can add a finding that silently escapes coverage. Migration 295
+> found that a sweep for `_total` alone passed `drift_count` and therefore
+> examined zero keys, giving **counter suffix coverage**: *a classification rule
+> that only recognises one naming convention does not classify, it filters.*
+>
+> Two checkers declare a **roll-up** axis instead of their primitives, which is
+> legitimate only under the **roll-up axis rule**: the checker must assert, in its
+> own body, that the roll-up equals the sum of the primitives it stands for.
+> Without that, a roll-up is where findings go to disappear.
+>
+> The consumer test is the **strict counter-read needle**,
+> `coalesce((<var>->>'<axis>')::int`, and it defeats two blind spots a bare
+> `strpos` cannot. **Name collision**: `drift_total` is published by two different
+> checkers, so an unqualified search certifies either one on the other's consumer.
+> **Narrative versus status**: a signal interpolated into a human-readable evidence
+> string is not being consumed by a control, but textually it looks identical to
+> one read into a comparison. The variable qualifier kills the first, the
+> `coalesce(...)::int` shape kills the second. Verified live across all 24
+> (checker, axis) pairs.
+>
+> Four defects were found and closed. **The swallowed refusal**: an exception
+> handler that defaults a gap counter to zero converts an unrunnable check into a
+> passing control, so the board goes green *because* the detector broke. Zero is
+> the passing branch, null is the attention branch; 297, 298 and 299 fixed the
+> instances and every later migration in the batch runs a pre-install regex guard
+> refusing any `exception when others then ... := 0;` handler. **Declare on every
+> success path**: `tf_automation_out_of_band` had a legitimate early return that
+> shipped no `axes` key, which is a conditional declaration and therefore no
+> declaration at all; 301 collapsed it into the shared declaring tail and 302
+> enforced the structure by asserting the function has exactly two return
+> statements. **Whether a function is a checker is not a property of its name**, it
+> is a property of whether the consumer reads a counter out of it, and by that test
+> `tf_controls_board` had been a checker since migration 288 without ever
+> declaring an axis while `tf_controls_signal_coverage` is consumed via its own
+> `gap_total`. Correcting the roster from eight to ten **before** it was written
+> into the generalised checker is what stopped the platform certifying one hundred
+> percent coverage over a population silently narrowed by two. **Roster closure**
+> now has a mechanism: 304 scans the evaluator for every `public.tf_*()` call it
+> makes and refuses any callee that is neither rostered nor on the explicit
+> non-checker list. The register moved to **27 controls, 24 passing, 3 attention,
+> 0 failing**, and `CM-SIGNALCOV-026` now states its own denominator. The full
+> reasoning, the roster table, the three couplings and the runbook are in
+> [`docs/CHECKER_AXIS_DECLARATION.md`](../../docs/CHECKER_AXIS_DECLARATION.md).
+
 > **Migrations 288 through 290 are one change**, split into three because the
 > middle one found something the batch was not looking for and shipping the
 > detector before the fix is what makes the finding credible. 288 builds
@@ -520,9 +605,12 @@ of what exists so nothing is silently dropped.
 > the database during the 2026-07-25 build session reference an informal counter
 > that runs behind this series (for example, `tf_function_registry` rows say
 > "seeded at migration 233" for what is ordinal **239**,
-> `tf_function_safety_audit_and_registry`). Where the two disagree, **the ordinal
-> in this file is correct and the migration name is the unambiguous identifier**.
-> Cite migrations by name.
+> `tf_function_safety_audit_and_registry`). The same drift appears in the header
+> comments written *inside* migrations 301 through 306, which use an informal
+> counter running **two behind** the true ordinal: the migration whose body says
+> "Migration 300" is true ordinal 301, and so on through the end of that batch.
+> Where the two disagree, **the ordinal in this file is correct and the migration
+> name is the unambiguous identifier**. Cite migrations by name.
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

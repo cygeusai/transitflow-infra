@@ -651,7 +651,7 @@ event, because the next operator has no way to know whether it was safe.
 
 ## Conventions register
 
-Twenty-eight conventions. Repeatedly, the highest-yield defect on this platform has been two writers
+Forty-one conventions. Repeatedly, the highest-yield defect on this platform has been two writers
 each holding a different convention, both correct in isolation, silently
 disagreeing at the seam. Every one of these is now enforced somewhere the
 disagreement becomes an error at write time rather than a discrepancy at read
@@ -689,13 +689,17 @@ time.
 | 28 | A privilege that no policy can constrain is not covered by the policy layer | privileges outside the RLS-evaluated set (`TRUNCATE`, `TRIGGER`, `REFERENCES`, `MAINTAIN`) are revoked from `anon` and `authenticated` on every table, leaving only the four verbs PostgREST uses; unreachability through the current front door is not a reason to hold a privilege | migration 272, live count of tables `TRUNCATE`-able by a client role is 0 of 174, was 172 of 173; monitored since migration 283 by the `tables_truncatable_by_client` axis of `tf_security_scan`, see `LEAST_PRIVILEGE_TABLE_GRANTS.md` and `SECURITY_SCAN_INTEGRITY.md` |
 | 29 | A checker must publish the population it counted over | every gap count is accompanied by the denominator that produced it, and a checker whose population comes back empty raises rather than returning zero; the declared axis list and the computed axis object are coupled by an assertion so an axis cannot be declared and left out of the total, nor computed and left out of the declaration | `tf_security_scan()` `population` block and empty-population raise since migration 280; `gap_total` derived by iterating `v_axis_order` rather than summing named variables; the same shape already in `tf_grant_tier_audit` and `tf_guard_detection_audit` |
 | 30 | An exemption must suppress something, or it is a trap | a standing exemption over a function that is already guarded hides the finding the day the guard is removed; staleness is detected by the exact inverse of the axis predicate, published as its own count, escalated into `ok: false`, and refused at write time by a validating trigger that also requires a reason long enough to be a review | `tf_security_scan()` `stale_exemptions` and the `stale_exemptions_present` integrity error since migration 280; two live rows retired by migration 281; `tf_security_scan_exemption_validate` since migration 282, proved by three inductions |
-
-| 31 | Every declared detection axis has a consumer that renders it | detection without consumption is not a control, it is a log line; the axis list a checker publishes is matched against the **catalog definition** of its consumer, not against a register, and any axis nobody renders is a gap that fails a control of its own | `tf_controls_signal_coverage()` since migration 285, read by `CM-SIGNALCOV-026` since migration 287; live `unread_total 0` over 6 declared axes. The match uses the axis name wrapped in single quotes, because convention 21 creates names that are strict prefixes of one another and a bare substring match reports the short name as read when only the long one is referenced |
-| 32 | A checker that reports on refusals is not gated on its own refusal flag | every other consumer treats `ok: false` as null per convention 26, but the checker whose job is to notice unheard refusals must run and report regardless, or the failure it exists to surface is the failure that silences it | `tf_controls_signal_coverage()` is deliberately ungated on `tf_security_scan`'s `ok` flag and instead publishes `refusal_flag_honoured`, a boolean read out of the consumer's catalog text, plus five distinct refusal codes of its own |
+| 31 | Every declared detection axis has a consumer that renders it | detection without consumption is not a control, it is a log line; the axis list a checker publishes is matched against the **catalog definition** of its consumer, not against a register, and any axis nobody renders is a gap that fails a control of its own | `tf_controls_signal_coverage()` since migration 285, read by `CM-SIGNALCOV-026` since migration 287; generalised from one checker to the full roster by migration 304, live `unread_total 0` over **24 declared axes across 10 checkers**. The match is the strict counter-read needle of convention 39, which supersedes the earlier single-quoted-name match |
+| 32 | A checker that reports on refusals is not gated on its own refusal flag | every other consumer treats `ok: false` as null per convention 26, but the checker whose job is to notice unheard refusals must run and report regardless, or the failure it exists to surface is the failure that silences it | `tf_controls_signal_coverage()` is deliberately ungated on the checkers it inspects. The single-checker `refusal_flag_honoured` boolean was retired by migration 304 and replaced by `ungated_refusal_total`, which asserts the property across all ten rostered checkers in either spelling of the gate idiom; live 0 |
 | 33 | Creating a `tf_*` function carries three obligations in the same migration | apply a grant tier, declare the function in `tf_function_registry`, and wire its signal into a control; only the first is structurally enforced today, the second and third are detected after the fact | tier enforced and asserted since migration 282, detected by `tf_grant_tier_audit` `uncovered_total`; declaration detected by `tf_function_safety_audit` `undeclared_total`, which is what rolled migration 287's first attempt back; signal wiring detected by `tf_controls_signal_coverage` for scan axes only |
 | 34 | A stored status is a cache, so publish its age beside it against a stated threshold | a register of judgements with no date on it renders an evaluation from any point in the past as current; the age, the threshold and the cadence that produced the threshold are all published so the freshness claim is falsifiable rather than asserted | `tf_controls_board()` `board_age_hours` / `threshold_hours` / `cadence` since migration 288; threshold 792 hours, the `0 14 1 * *` monthly cadence plus a two-day grace; read by `CM-BOARDFRESH-027` since migration 290 |
 | 35 | A control's status branch must compute a status, never assert one | a branch that reads `then 'passing'` survives every failure it exists to detect; the property worth checking was never whether a branch exists but whether it decides anything, so the register is measured on both axes, controls with no branch at all and controls whose branch asserts a literal | `tf_controls_board()` `unscored_total` since migration 288 and `tautological_total` since migration 289, both parsed out of `pg_get_functiondef` of the evaluator; found `GV-CCM-016` hardcoded to `'passing'` on its first run, fixed in migration 290; live 0 and 0 |
 | 36 | A signal must not be produced by the act of evaluating it | a freshness reading taken after the write it measures is always zero, so the prior state is read and held before anything is stamped, and the evidence string states the ordering so a reader can verify it without the source | `tf_controls_evaluate` calls `tf_controls_board()` in its opening statements since migration 290 and the `CM-BOARDFRESH-027` evidence ends *"Age is measured before this run stamps the board"* |
+| 37 | An axis is the consumption surface, and a checker declares its own | an axis is a signal a control is expected to READ, not an inventory of everything the checker counts; only the checker knows which of its numbers are findings and which are population or complement, so the checker declares and the detector verifies, because an inspecting detector that cannot tell a finding from a denominator demands consumers for numbers no control should read and the platform grows fake controls to satisfy it | all ten rostered checkers publish `axes` since migrations 291 through 303; every non-axis counter is mapped to a written rationale in `non_gating`; live 24 axes across 10 checkers |
+| 38 | Every published counter is classified, and classification recognises every naming convention | a checker's tail asserts that each declared axis appears in the payload, that each non-gating key carries a rationale, and that **every** counter key is one of axis, component axis, or explained non-gating, so nothing ships unclassified; the sweep matches `_total`, `_count` and `_issues`, because a classification rule that only recognises one naming convention does not classify, it filters | the three couplings in every declaring checker since migration 291; migration 295 found the `_total`-only sweep passing `drift_count` while examining zero keys, which is an assertion that can never fail |
+| 39 | A consumer read is proved by the strict counter-read needle | `coalesce((<evaluator variable>->>'<axis>')::int` is the only form that proves consumption, because the variable qualifier defeats axis names published by more than one checker and the `coalesce(...)::int` shape defeats a signal that appears only inside a human-readable evidence string; a bare `strpos` over a function definition proves neither | `tf_controls_signal_coverage` since migration 304, verified live across all 24 (checker, axis) pairs. Supersedes the single-quoted-name match of convention 31. The collision case is real: `drift_total` is published by both `tf_grant_tier_audit` and `tf_function_safety_audit` |
+| 40 | A roll-up may stand in for its primitives only if the checker asserts the identity | a checker may declare one roll-up axis instead of five primitives, which makes the consuming control simpler to reason about, but only if it asserts in its own body that the roll-up equals the sum of the primitives it stands for; without that assertion a roll-up is where findings disappear, because adding a sixth primitive and forgetting the sum leaves the number at zero while the blind spot grows | `tf_grant_tier_audit` `violation_total` and `tf_controls_signal_coverage` `gap_total` since migration 292 and 304; both publish their primitives as `component_axes` and assert the identity before returning |
+| 41 | A checker declares on every success path, and zero is the passing branch while null is the attention branch | an early return that bypasses the declaring tail is a conditional declaration, which is no declaration at all; and an exception handler that defaults a gap counter to zero converts an unrunnable check into a passing control, so the board goes green *because* the detector broke | `tf_automation_out_of_band` collapsed to one declaring tail in migration 301, enforced structurally by migration 302's assertion that the function has exactly two return statements; refuse-by-return applied to `tf_data_quality_audit` in 297, honoured as unmeasured by the evaluator in 298, and extended to system health in 299; every migration in the batch runs a pre-install regex guard refusing `exception when others then ... := 0;` |
 
 The countermeasure that keeps working is the same every time: express the
 convention in the database, on the *normalised* form of the value, so violation
@@ -719,6 +723,58 @@ inspected, queried, and extended by an operator at 2am.
 ## Defect-pattern library
 
 The recurring shapes. Recognising one of these saves an hour.
+
+**The swallowed refusal.** An exception handler that defaults a gap counter to
+zero, converting an unrunnable check into a passing control. See house rule
+twenty. It belongs in this library and not only in the rules because it is the
+only defect in the collection whose output is indistinguishable from success, and
+because it can be reintroduced in three lines by anyone tidying up an error path.
+Recognise it by the shape `exception when others then <counter> := 0`, and by any
+control whose evidence is confident and whose underlying checker nobody has run
+by hand recently.
+
+**The conditional declaration.** A checker with an early return that bypasses the
+tail where its axes are declared. `tf_automation_out_of_band` returned a
+well-formed zero payload when no `openphone` settings row existed for the company,
+and that payload carried no `axes` key. The declaration was therefore true on the
+normal path and absent on the edge path, which is the path where the platform is
+least able to explain itself. A property that holds conditionally is not a
+property. Recognise it by counting return statements: a declaring checker should
+have exactly two, the refusal and the declaring tail. A third return is a success
+path that ships no axes. Fixed by collapsing the early return into an assignment
+that falls through to the shared tail, and enforced by asserting the return count
+in migration 302 rather than asserting the instance.
+
+**The population mistaken for a finding.** A detector that infers a checker's
+signals by inspecting its payload keys cannot tell a finding from the denominator
+the finding is measured against. `enabled_total` and `out_of_band_total` look
+identical to a key-name filter; one is a gap and the other is the population it
+came out of. The consequence is not a missed defect but a **manufactured** one:
+the platform sits permanently one axis short of full coverage for a reason that
+exists only inside the detector, and the natural remedy is to add a control whose
+purpose is to satisfy a checker rather than to protect the business. Recognise it
+whenever a coverage number cannot be driven to its target without inventing a
+consumer. Fix by inverting the burden: the checker declares, the detector
+verifies.
+
+**The classification rule that filters.** An assertion that sweeps a payload for
+counter keys using one naming convention, and therefore examines zero keys in any
+checker that uses another. `tf_automation_note_drift` publishes `drift_count`; a
+sweep matching only `%_total` passed it every time while checking nothing. This
+is the seeded-register failure in miniature, an assertion that cannot fail is not
+an assertion, and it is particularly hard to see because the code reads as
+thorough. Recognise it by asking how many rows the assertion actually examined,
+not whether it passed. Any classification sweep should publish or log its own
+match count.
+
+**The narrative read.** A signal that appears in the consumer's text only inside a
+`format()` call that builds a human-readable evidence string. Textually it is
+indistinguishable from a signal read into a status comparison, so any coverage
+check built on `strpos` over the whole definition certifies it as consumed. It is
+not consumed. Nothing changes state on it. Recognise it by requiring the shape of
+a numeric comparison rather than the presence of a name, which is what the strict
+counter-read needle `coalesce((<var>->>'<axis>')::int` does without needing to
+parse regions of the function.
 
 **The write-timestamp trap.** A column named for when something was *evaluated*
 records when the row was *written*, and those are the same only if every write
@@ -1276,7 +1332,79 @@ because the first cannot be enforced against an agent that has SQL access.
 
 ## The house rules
 
-Eighteen rules, each of which exists because breaking it cost real time.
+Twenty rules, each of which exists because breaking it cost real time.
+
+**Twenty. Zero is the passing branch and null is the attention branch, so a check
+that could not run must never report clean.** Found in `tf_data_quality_audit`
+while giving it an axis declaration in migration 297.
+
+The shape is three lines long and it is the most dangerous thing in the
+governance layer:
+
+```sql
+exception when others then
+  v_gap := 0;
+```
+
+The checker throws. The handler catches. The counter is set to the value that
+means "nothing wrong". The control reads zero gaps and renders green. The board
+is now green **because** the detector is broken, and there is no output anywhere
+that looks anomalous. Every other failure mode in this document produces a wrong
+number a careful reader could question. This one produces the *right-looking*
+number for the wrong reason, and the more thoroughly a team trusts its board, the
+more completely this defeats them.
+
+The correction is a type distinction, not a code change. Zero is a measurement
+that found nothing. Null is the absence of a measurement. They are not the same
+value and a control must not treat them the same way. `tf_data_quality_audit` was
+rebuilt to refuse by return value rather than by exception, `tf_controls_evaluate`
+was taught to treat a refused data-quality audit as **unmeasured** rather than
+clean, and `tf_system_health` was corrected to report an unavailable probe as
+**degraded** rather than operational. This is convention 26 applied one level
+deeper: convention 26 says a consumer must listen to a refusal, rule twenty says
+the checker must be capable of issuing one in the first place.
+
+It is enforced structurally, because a rule this easy to reintroduce by accident
+cannot be left to review. Every migration in the 291 to 306 batch runs a regex
+over the function text **before** installing it:
+
+```sql
+if v_new ~ 'exception when others then[^;]*:=\s*0\s*;' then
+  raise exception 'refusing to install a handler that defaults a gap counter to zero';
+end if;
+```
+
+A pre-install guard is worth more than a post-hoc detector here, because the
+window between introducing this defect and noticing it is unbounded by
+construction.
+
+**Nineteen. Whether a function is a checker is not a property of its name. It is
+a property of whether the consumer reads a counter out of it.** Found while
+building the ten-checker roster in migration 304, against an inherited
+classification that said eight.
+
+The roster was going to be written from the existing documentation, which listed
+eight checkers and three non-checkers. Before writing it, the evaluator's actual
+text was read for each supposed non-checker. `tf_controls_board` turned up
+`coalesce((v_board->>'unscored_total')::int,0)` and
+`coalesce((v_board->>'tautological_total')::int,0)`, both driving the status of
+`CM-BOARDFRESH-027`. That is the definition of a checker. It had been one since
+migration 288 and had never declared an axis. The same test showed
+`tf_controls_signal_coverage` is consumed via its own `gap_total`, making the
+coverage detector a member of the population it measures.
+
+Had the roster been written from the inherited classification, the platform would
+have published **one hundred percent coverage over a population silently narrowed
+by two**, which is precisely the undeclared-denominator failure convention 29
+exists to prevent, arriving through a door convention 29 does not watch. A
+denominator can be wrong not only by being unpublished but by being published and
+mis-derived.
+
+The rule has a structural half. A roster maintained by hand goes stale the first
+time somebody adds a consumer, so migration 304 gave it closure: the detector
+scans `tf_controls_evaluate` for every `public.tf_*()` call it makes and refuses
+any callee that is neither on the roster nor on an explicit, named non-checker
+list. Membership is now derived from the consumer rather than asserted about it.
 
 **Eighteen. A control's status branch must compute a status, never assert one,
 and a signal must not be produced by the act of evaluating it.** Two halves of
@@ -1888,8 +2016,12 @@ The three before that are the signal-consumption tier, all owned by
 - `CM-SCANINTEG-025` — the security scan vouches for its own population and its
   refusals are heard. Reads `integrity_total` plus `stale_exemption_total`, and
   is the reason the evaluator now honours the scan's `ok` flag at all.
-- `CM-SIGNALCOV-026` — every declared detection axis has a consumer that renders
-  it. Reads `tf_controls_signal_coverage` `gap_total`. Live 0 over 6 axes.
+- `CM-SIGNALCOV-026` — every declared detection axis on the checker roster has a
+  consumer that renders it. Reads `tf_controls_signal_coverage` `gap_total`,
+  which since migration 304 is a roll-up of five primitives: unread axes,
+  undeclared checkers, unmeasured checkers, unrostered callees and
+  refusal-ungated checkers. Live 0 over **24 axes across 10 checkers**, up from
+  6 axes across 1 checker before migration 291.
 
 The structural change in that batch matters more than the three rows.
 `tf_controls_evaluate` had never honoured `tf_security_scan`'s `ok` flag, because
@@ -2779,16 +2911,84 @@ thing was there. Checking that it was there is what let it stay wrong. The
 question to ask of any mechanism is not whether it is present but whether it can
 produce an answer other than the one it is producing.
 
-The sweep resumes at the four checkers that publish no machine-readable `axes`
-array, `tf_grant_tier_audit`, `tf_function_safety_audit`,
-`tf_guard_detection_audit` and `tf_automation_note_drift`. None of them can be
-coverage-checked, so convention 31 currently holds over one checker out of five
-and that limit is not published anywhere the board can see it. Behind that sits
-obligation two of convention 33, which is detected after the fact rather than
-enforced, and which an event trigger on `ddl_command_end` would make structural.
-Behind all of it, still, sits ClickUp `86bb3etah`, the deployment-coordination
-decision, which passes 9 through 12 have now named the largest unmitigated
-governance risk in the backend four consecutive times without reducing it.
+The sweep resumes at the checkers that publish no machine-readable `axes` array.
+None of them can be coverage-checked, so convention 31 holds over one checker out
+of a population this document could not state, and that limit is not published
+anywhere the board can see it. Behind that sits obligation two of convention 33,
+which is detected after the fact rather than enforced, and which an event trigger
+on `ddl_command_end` would make structural. Behind all of it, still, sits ClickUp
+`86bb3etah`, the deployment-coordination decision, which passes 9 through 12 have
+now named the largest unmitigated governance risk in the backend four consecutive
+times without reducing it.
+
+**Pass 13, 2026-07-25, at migration 306.** Pass 12 closed by naming four checkers
+that could not be coverage-checked and estimating convention 31's reach at one
+checker in five. Pass 13 built the declaration mechanism that closes that gap, and
+the first thing the mechanism did was prove the estimate wrong in the direction
+that matters. **It was one in ten, not one in five.**
+
+The batch is sixteen migrations, 291 through 306, and it converts convention 31
+from a property proved over a sample into a property enforced over a stated
+population. Every checker now declares its own axes. The coverage detector, which
+previously inspected one checker's payload keys, now verifies ten checkers'
+declarations against the evaluator's catalog text. Live: ten checkers,
+twenty-four axes, zero unread, zero undeclared, zero unmeasured, zero unrostered
+callees, zero refusal-ungated. `CM-SIGNALCOV-026` publishes all of those numbers
+so a reader can tell ten-of-ten from one-of-one without leaving the register.
+
+Four findings are worth carrying forward.
+
+The first is that **the roster was wrong when this pass inherited it, and the only
+thing that caught it was refusing to trust the classification**. Documentation
+said eight checkers. Reading `tf_controls_evaluate`'s actual use of `v_board`
+showed two `coalesce((v_board->>'...')::int,0)` reads driving
+`CM-BOARDFRESH-027`, which means `tf_controls_board` had been a checker since
+migration 288 and had never declared an axis. Writing the roster from the
+inherited list would have certified one hundred percent coverage over a
+population narrowed by two, in the same migration that introduced the denominator
+convention was supposed to protect. **Whether a function is a checker is not a
+property of its name.** It is house rule nineteen now, and its structural half,
+roster closure derived from the consumer rather than asserted about it, is what
+stops the same drift recurring silently.
+
+The second is that **the population-versus-finding distinction is not a
+refinement of coverage measurement, it is the reason coverage measurement has to
+be declarative at all**. An inspecting detector demands a consumer for
+`enabled_total`, which is a denominator. Nobody should ever write that control.
+The coverage number therefore cannot reach its target honestly, and the pressure
+is toward writing a dishonest one. Every metric that cannot be satisfied without
+inventing something is generating that pressure, and the fix is never to relax the
+metric.
+
+The third is that **the swallowed refusal is a different class of defect from
+everything in the previous twelve passes**. Every earlier finding produced a wrong
+number that a careful reader could interrogate: a zero from a scan looking for a
+word, an age of zero from a self-stamping read, a branch asserting a literal. Each
+of them, once seen, is obviously suspicious. `exception when others then v_gap :=
+0` produces a number that is correct-looking, plausible, and identical to the
+output of a healthy system. It is now house rule twenty, and it is the only rule
+in the collection enforced by a pre-install regex rather than a post-hoc detector,
+because the window between introducing it and noticing it has no upper bound.
+
+The fourth is that **presence was never the property worth checking, for the
+fourth pass running, and this time the mechanism whose presence was mistaken for
+its property was an assertion**. `tf_automation_note_drift`'s classification sweep
+matched `%_total` against a payload whose only counter is `drift_count`. The
+assertion ran, examined zero keys, and passed, on every run. An assertion that
+cannot fail is not an assertion. The question to ask of a check is not whether it
+passed but how many things it looked at.
+
+The sweep resumes at obligation two of convention 33. It is now the oldest
+structural gap in the chain and the cheapest to close: nothing prevents a
+migration creating a `tf_*` function without a `tf_function_registry` row, and an
+event trigger on `ddl_command_end` would make it impossible rather than merely
+detectable. Behind that, the `supabase_admin` default-ACL residual, whose symptom
+migration 283 monitors and whose mechanism is untouched. Behind all of it, for the
+fifth consecutive pass, ClickUp `86bb3etah`, the deployment-coordination decision.
+Two agents can still write DDL to this production schema with no coordination
+primitive between them. Five passes have named it the largest unmitigated
+governance risk in the backend. Naming it a sixth time is not a plan.
+**Recommendation stands: advisory lock, deploy log, `CM-DEPLOY` control.**
 
 ---
 

@@ -7,9 +7,9 @@ Transit & Flow, mapped to **NIST CSF**, **SOC 2**, and **CIS Controls v8**.
 
 | Object | Purpose |
 |--------|---------|
-| `it_controls` | Controls register (**27 controls** as of migration 290) with framework mapping, owner, status, evidence. Keyed by `control_key`, unique |
+| `it_controls` | Controls register (**27 controls** as of migration 306) with framework mapping, owner, status, evidence. Keyed by `control_key`, unique |
 | `tf_controls_evaluate()` | Re-scores automated controls from live signals (security scan, grant-tier audit, function-safety audit, guard-detection audit, signal coverage, cron presence, MFA gaps, data-quality). Takes **no arguments** |
-| `tf_controls_signal_coverage()` | Compares the axis list `tf_security_scan()` declares against the catalog definition of `tf_controls_evaluate`, and names any axis no control renders. Added migration 285, read by `CM-SIGNALCOV-026` since 287 |
+| `tf_controls_signal_coverage()` | Verifies, for a declared roster of ten checkers, that each one declares its axes, that every declared axis is read by `tf_controls_evaluate` via the strict counter-read needle, that every `tf_*` callee of the evaluator is on the roster, and that every checker's refusal flag is honoured. Added migration 285 over one checker, generalised to the full roster by migration 304, read by `CM-SIGNALCOV-026` since 287 |
 | `tf_controls_board()` | Publishes the age of the register, names every automated control the evaluator has no status branch for, and names every branch that asserts a status literal instead of computing one. Folds all three into `authoritative`. Added migration 288, extended 289, read by `CM-BOARDFRESH-027` since 290 |
 | `access_reviews` | Access certification snapshots with findings |
 | `tf_access_review()` | Snapshots accounts/roles/MFA/last-sign-in; flags MFA gaps, stale, terminated-active, SoD |
@@ -75,7 +75,7 @@ it.
 |-----|---------|--------|--------|
 | `CM-TRUNCGRANT-024` | Privileges outside the RLS-evaluated set are not held by client roles | `tf_security_scan` `tables_truncatable_by_client` | passing |
 | `CM-SCANINTEG-025` | The security scan vouches for its own population and its refusals are heard | `tf_security_scan` `integrity_total` + `stale_exemption_total` | passing |
-| `CM-SIGNALCOV-026` | Every declared detection axis has a consumer that renders it | `tf_controls_signal_coverage` `gap_total` | passing |
+| `CM-SIGNALCOV-026` | Every declared detection axis on the checker roster has a consumer that renders it | `tf_controls_signal_coverage` `gap_total` over a ten-checker roster | passing |
 
 All three are `automated`, owned by the `CISO` role, and mapped across SOC 2,
 CIS v8 and NIST CSF. The framework mappings are stored on the row, not in this
@@ -146,6 +146,53 @@ Read [`CONTROL_BOARD_FRESHNESS.md`](./CONTROL_BOARD_FRESHNESS.md) for the full
 narrative, the discarded design, the asserted-splice technique used to patch the
 evaluator, and the refusal table.
 
+## What migrations 291 through 306 changed about the register
+
+No new control rows. Sixteen migrations, and the register still reads 27. What
+changed is what one of those rows is capable of asserting.
+
+`CM-SIGNALCOV-026` used to certify that six declared axes on one checker were
+read. It now certifies four properties across **ten checkers and twenty-four
+axes**: that every rostered checker declares its axes, that every declared axis is
+read by the evaluator into an actual comparison, that every `tf_*` function the
+evaluator calls is on the roster or on an explicit non-checker list, and that
+every checker's refusal flag is honoured. Its title, description and signal string
+were rewritten in migration 306 so the register states the roster and the
+denominator rather than leaving both implicit.
+
+Live evidence:
+
+> 10 of 10 rostered checker(s) declare axes; 24 axis(es) declared, 0 unread by
+> this evaluator []; undeclared [], unmeasured [], unrostered callee(s) [],
+> refusal-ungated []
+
+Two findings from that batch bear directly on how this register should be read by
+an auditor.
+
+**The roster was inherited wrong and the correction happened before publication.**
+Documentation claimed eight checkers. Reading the evaluator's actual use of
+`v_board` showed two numeric reads driving `CM-BOARDFRESH-027`, which makes
+`tf_controls_board` a checker that had never declared an axis, and the same test
+showed the coverage detector is consumed via its own `gap_total`. Publishing the
+inherited number would have certified one hundred percent coverage over a
+population narrowed by two. **Whether a function is a checker is not a property of
+its name. It is a property of whether the consumer reads a counter out of it**,
+and roster membership is now derived from the consumer's catalog text rather than
+maintained by hand.
+
+**A control must never report clean because its checker could not run.** An
+exception handler that defaults a gap counter to zero produces green output that
+is indistinguishable from a healthy system. Zero is the passing branch, null is
+the attention branch. `tf_data_quality_audit` now refuses by return value,
+`tf_controls_evaluate` treats that refusal as **unmeasured** rather than clean,
+and `tf_system_health` reports an unavailable probe as **degraded** rather than
+operational. Every migration in the batch runs a pre-install regex guard refusing
+any handler of that shape.
+
+Read [`CHECKER_AXIS_DECLARATION.md`](./CHECKER_AXIS_DECLARATION.md) for the
+roster table, the three couplings, the strict counter-read needle and the
+runbook.
+
 ## Runbook
 
 **Score the board.**
@@ -160,8 +207,16 @@ select public.tf_controls_evaluate();
 select public.tf_controls_signal_coverage();
 ```
 
-Expect `ok: true`, `unread_total: 0`, `refusal_flag_honoured: true`,
-`gap_total: 0`. A non-zero `unread_total` names the axes in `unread_axes`.
+Expect `ok: true` and `gap_total: 0`, with all five primitives at zero:
+`unread_total`, `undeclared_checker_total`, `unmeasured_checker_total`,
+`unrostered_callee_total` and `ungated_refusal_total`. Each names its offenders in
+a matching array: `unread_axes`, `undeclared_checkers`, `unmeasured_checkers`,
+`unrostered_callees`, `ungated_checkers`. Also expect `checkers_total: 10`,
+`declaring_checker_total: 10` and `axes_total: 24`, which are the denominators.
+A `checkers_total` that has moved without a migration explaining it is itself the
+finding. The `refusal_flag_honoured` boolean was retired in migration 304 and
+replaced by `ungated_refusal_total`, which asserts the same property across all
+ten checkers rather than one.
 
 **Prove the board is fresh and every automated control is genuinely scored.**
 

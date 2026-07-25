@@ -468,11 +468,8 @@ select control_key, status, last_evaluated_at, left(evidence, 120)
   second and larger defect, a control whose status branch asserted `'passing'`
   rather than computing it. See
   [`CONTROL_BOARD_FRESHNESS.md`](./CONTROL_BOARD_FRESHNESS.md).
-- **Coverage is measured over `tf_security_scan` only.** `tf_grant_tier_audit`,
-  `tf_function_safety_audit`, `tf_guard_detection_audit` and
-  `tf_automation_note_drift` do not publish machine-readable axis lists, so
-  their counters cannot be coverage-checked the same way. Adding an `axes`
-  array to each is the obvious next move.
+- ~~**Coverage is measured over `tf_security_scan` only.**~~ **Closed by
+  migrations 291 through 306.** See the generalisation section below.
 - **Obligation two has no gate.** Nothing stops a migration creating a `tf_*`
   function without a `tf_function_registry` row. The detector is fast enough
   that this has not hurt, but an event trigger on `ddl_command_end` would close
@@ -485,8 +482,68 @@ select control_key, status, last_evaluated_at, left(evidence, 120)
 
 ---
 
+## The generalisation, migrations 291 through 306
+
+This document proved a principle over a sample of one. The next batch closed the
+gap between the principle and the platform.
+
+**What changed.** The detector no longer infers a checker's signals by inspecting
+its payload keys. Every checker now **declares** its axes, and the detector tests
+those declarations against the evaluator across the whole roster. Coverage went
+from one checker with six axes to **ten checkers with twenty-four axes**, and the
+control now publishes its own denominator so a reader can tell ten-of-ten from
+one-of-one.
+
+**Why declaration beats inspection.** Inspection cannot distinguish a **finding**
+from a **population**. `tf_automation_out_of_band` publishes `enabled_total`, the
+count of automations currently on, and `out_of_band_total`, the subset that got
+there without passing through `tf_automation_arm`. Only the second is a finding.
+An inspecting detector demands a consumer for both, the platform sits permanently
+one axis short for a reason that is an artefact of the detector, and the natural
+response is to add a control that exists to satisfy a checker rather than to
+protect the business. The convention that came out of it: **an axis is the
+consumption surface**, a signal a control is expected to READ, not an inventory of
+everything the checker counts.
+
+**Two of this document's own findings were upgraded.** The prefix-collision
+gotcha recorded here, that textual coverage checks must match the identifier
+wrapped in single quotes rather than bare, turned out to be the weaker half of the
+problem. Two further blind spots surfaced. `drift_total` is published by both
+`tf_grant_tier_audit` and `tf_function_safety_audit`, so an unqualified textual
+search certifies either checker on the strength of the other's consumer. And a
+signal interpolated into a human-readable evidence string is textually
+indistinguishable from one read into a status comparison, so a checker nobody acts
+on can pass. Both are defeated by the **strict counter-read needle**,
+`coalesce((<var>->>'<axis>')::int`: the variable qualifier kills the collision, the
+`coalesce(...)::int` shape kills the narrative case.
+
+**Roster closure got a mechanism.** This document's detector had no way to notice
+that its own roster had gone stale. Migration 304 scans `tf_controls_evaluate` for
+every `public.tf_*()` call it makes and refuses any callee that is neither on the
+roster nor on an explicit non-checker list. That is what stops the coverage
+percentage staying at one hundred while the evaluator quietly grows a new
+consumer.
+
+**The roster was wrong when it was inherited, and the mechanism caught it.** The
+state carried into that batch asserted eight checkers. Reading the evaluator's
+actual use of `v_board` showed `coalesce((v_board->>'unscored_total')::int,0)`
+driving `CM-BOARDFRESH-027`, which means `tf_controls_board` had been a checker
+since migration 288 and had never declared an axis. The same test proved
+`tf_controls_signal_coverage` is itself consumed. **Whether a function is a checker
+is not a property of its name. It is a property of whether the consumer reads a
+counter out of it.**
+
+Full treatment, including the three couplings, the swallowed-refusal rule and the
+declare-on-every-success-path rule, is in
+[`CHECKER_AXIS_DECLARATION.md`](./CHECKER_AXIS_DECLARATION.md).
+
+---
+
 ## Related
 
+- `docs/CHECKER_AXIS_DECLARATION.md` — migrations 291 through 306, which
+  generalise this document's detector from one checker to ten and give the
+  control a stated denominator
 - `docs/SECURITY_SCAN_INTEGRITY.md` — migrations 280 through 283, the
   population declaration and the `ok: false` refusal ladder this batch teaches
   the consumer to hear

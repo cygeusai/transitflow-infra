@@ -272,11 +272,11 @@ reappears.
 
 ---
 
-## 6. State after migration 257
+## 6. State after migration 261
 
 | Measurement | Value |
 | --- | --- |
-| Migrations | 257 |
+| Migrations | 261 |
 | Registered guard helpers | 15 |
 | Definer functions scanned | 55 |
 | Unguarded | 0 |
@@ -287,9 +287,18 @@ reappears.
 | Passing / attention / failing | 21 / 2 / 0 |
 | `tf_*` functions | 84 |
 | Declared in `tf_function_registry` | 84 |
-| Declared grant tiers | 18 |
+| Declared grant tiers | 85 (48 admin / 36 staff / 1 anon) |
+| Grant-tier coverage | 84 of 84 `tf_*` functions, 100.0 pct |
 | Grant-tier violations | 0 |
 | Automation flags enabled | 0 of 13 |
+
+Declared grant tiers stood at **18** through migration 257. Migrations 258
+through 261 raised it to 85 by declaring the full `tf_*` surface at its current
+live reality and widening the audit's undeclared sweep from *anon-reachable* to
+*anon-or-authenticated-reachable*. That is the same class of finding as this
+note, arriving from a different direction: here the checker's **rules** were
+wrong, there its **coverage** was wrong, and in both cases the control read
+green. See [`FUNCTION_GRANT_TIERS.md`](./FUNCTION_GRANT_TIERS.md).
 
 The two controls reading `attention` are `AC-MFA-003` and `DP-PITR-007`. Both
 are owner actions, tracked in ClickUp, and neither is a code defect.

@@ -42,7 +42,7 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - [`MARKETING_ROI_AND_REVENUE.md`](./MARKETING_ROI_AND_REVENUE.md) — collected-revenue convention, channel P&L
 - [`REVENUE_LINKAGE.md`](./REVENUE_LINKAGE.md) — invoice-to-job sweep, natural-key integrity, traceability
 - [`SECURITY_GUARDS_AND_QUEUE_LANES.md`](./SECURITY_GUARDS_AND_QUEUE_LANES.md) — definer-guard axis, `AC-DEFN-017`, queue lane registry, orphan reason codes
-- [`FUNCTION_GRANT_TIERS.md`](./FUNCTION_GRANT_TIERS.md) — the three-tier `EXECUTE` model, the Supabase default-privileges trap, `tf_apply_grant_tier`, `CM-GRANT-021`
+- [`FUNCTION_GRANT_TIERS.md`](./FUNCTION_GRANT_TIERS.md) — the three-tier `EXECUTE` model, the Supabase default-privileges trap and its Postgres-native PUBLIC twin, `tf_apply_grant_tier`, `CM-GRANT-021`, and **the coverage defect closed by migrations 258 through 261**: a checker whose own coverage was decided by the population it was checking
 - [`AUTOMATION_ARMING.md`](./AUTOMATION_ARMING.md) — **read before arming anything that reaches a customer.** The thirteen-automation registry, the four-value bounding model, the blast-radius predicate contract, the eight-step arming sequence and its five refusal classes, and the copy-paste arm/disarm/audit runbook
 - [`GUARD_DETECTION.md`](./GUARD_DETECTION.md) — **how the platform decides a `SECURITY DEFINER` function is guarded, and why that decision was wrong until migration 254.** The guard predicate registry, the comment-stripping match, the comments-gated / literals-advisory line, control `AC-GUARDREG-023`, and the induced comment-only guard that proves the whole chain catches
 
@@ -71,6 +71,27 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
   `ALTER DEFAULT PRIVILEGES` grants EXECUTE to `anon` and `authenticated` by
   name, and revoking the PUBLIC pseudo-role leaves both grants in place. Use
   `tf_apply_grant_tier`, which names them explicitly and records the intent.
+- Revoking `anon` alone is **also** not sufficient, for a second and independent
+  reason. PostgreSQL itself grants EXECUTE to PUBLIC on every newly created
+  function, so `has_function_privilege('anon', oid, 'execute')` stays true after
+  `revoke execute ... from anon` because every role is a member of PUBLIC. Both
+  revokes must appear in one statement:
+  `revoke all on function ... from public, anon, authenticated`. Migration 260's
+  fixture-setup assertion caught this on its own author.
+- A checker must publish what it found, what it looked at, and what it could not
+  see. `tf_grant_tier_audit` counted violations correctly over twelve declared
+  rows out of eighty-four functions and reported `violation_total: 0`, because
+  **not declaring a tier was a way to never be checked for tier drift**: the
+  checker's coverage was decided by the population it was checking. Any register
+  that a checker reads must be complete by construction, the audit must return
+  its own coverage (`tf_population_total`, `tf_covered_total`, `coverage_pct`),
+  and the control's evidence string must state its denominator. See
+  `FUNCTION_GRANT_TIERS.md`.
+- Widen a signal, never repurpose a key. When migration 259 widened the
+  undeclared sweep, `undeclared_anon_total` kept its original meaning as a strict
+  subset and `undeclared_reachable_total` was added beside it. Redefining a key
+  in place silently changes what every existing consumer believes it is reading,
+  and the consumers do not fail, they just become wrong.
 - A guard never observed refusing is not a guard, and a checker never observed
   catching anything is not a checker. Induce the failure in the same transaction
   and assert on the catch. Note that `set local role authenticated` alone leaves
@@ -138,11 +159,12 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
   subtransaction that raises its own sentinel exception on success, so the
   mutation rolls back under every code path, and assert afterwards that the
   fixture did not survive and the row count is back where it started.
-- Inside an anchored catalog patch there is **no format-string doubling layer**.
-  A `%%` written into a `raise` message inside a `replace()` payload lands as a
-  literal `%%` in the function source, which PL/pgSQL reads as an escaped percent
-  consuming zero arguments, and the function then fails with
-  `42601: too many parameters specified for RAISE`. Use a single `%` per argument.
+- Use a single `%` per argument in **every** `raise` format string. `%%` is a
+  literal escaped percent that consumes zero arguments, so the statement fails
+  with `42601: too many parameters specified for RAISE`. This bites hardest
+  inside an anchored catalog patch, where there is **no format-string doubling
+  layer**: a `%%` written into a `replace()` payload lands as a literal `%%` in
+  the function source. But the rule is not specific to patches. Write `%`.
 - Inside a dollar-quoted literal (`$j$ ... $j$`) single quotes are **literal and
   must not be doubled**. Doubling produces two literal apostrophes in the stored
   text. This is the exact inverse of the ordinary quoted-string rule, and it is

@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (257 migrations
+The full, ordered migration history of the Transit & Flow backend (261 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -140,6 +140,37 @@ of what exists so nothing is silently dropped.
 | 255 | 20260725123524 | guard_detection_control_ac_guardreg_023 |
 | 256 | 20260725123605 | guard_detection_autoticket_wiring |
 | 257 | 20260725123649 | guard_detection_induced_failure_proof |
+| 258 | 20260725125437 | grant_tier_full_surface_declaration |
+| 259 | 20260725125625 | grant_tier_audit_widen_undeclared_sweep |
+| 260 | 20260725130147 | grant_tier_coverage_induced_failure_proof |
+| 261 | 20260725130356 | grant_tier_coverage_evidence_and_autoticket_widening |
+
+> **Migrations 258 through 261 are one change**, split into four so each half of
+> the work could be asserted before the next was applied. They close a coverage
+> defect in the grant-tier checker: not declaring a tier was a way to never be
+> checked for tier drift, so `tf_grant_tier_audit()`'s own coverage was decided
+> by the population it was auditing. At discovery, 18 of 84 `tf_*` functions
+> carried a declared tier, 27 of the 66 undeclared were reachable by
+> `authenticated`, and the audit reported `violation_total: 0` because none of
+> them happened to be reachable by `anon`.
+>
+> 258 declares every `tf_*` function **at its current live reality** and asserts
+> that not one function's reachability changed, because silently revoking
+> `authenticated` in bulk would have broken the Lovable Hub with no attribution,
+> which is quiet corruption. 259 widens the undeclared sweep from *anon* to
+> *anon or authenticated* and adds `tf_population_total`, `tf_covered_total` and
+> `coverage_pct` so the audit publishes its own denominator. 260 proves the
+> widened sweep by creating a definer function reachable by `authenticated` and
+> not by `anon` with no declared tier, asserting the pre-259 predicate reads 0
+> on it, then observing the new sweep name it, coverage fall below 100 pct and
+> `CM-GRANT-021` turn `failing`, then observing full recovery. 261 widens the two
+> stale consumers: the `CM-GRANT-021` evidence string now states its surface,
+> and `tf_grant_tier_autoticket` now tickets on `undeclared_reachable_total`
+> instead of the always-zero anon subset, additively, so no consumer breaks.
+>
+> The reasoning, the measured exposure, the decision not to demote grants, both
+> induced-failure proofs and the operator runbook are in
+> [`docs/FUNCTION_GRANT_TIERS.md`](../../docs/FUNCTION_GRANT_TIERS.md).
 
 > **Migrations 253 through 257 are one change**, split into five so each half of
 > the work could be asserted before the next was applied. They move guard

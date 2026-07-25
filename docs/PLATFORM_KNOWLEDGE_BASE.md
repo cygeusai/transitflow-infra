@@ -4,7 +4,7 @@ The single troubleshooting reference for the Transit & Flow backend. Written to
 be read at 2am by someone who did not build it.
 
 State captured 2026-07-25 against Supabase project `kjooyhvynkzuvsixsutt` at
-migration 257. Every number in this document was read out of the live database,
+migration 261. Every number in this document was read out of the live database,
 not remembered.
 
 ---
@@ -161,7 +161,8 @@ Routed by what you observe. Each row names the check to run first.
 | A customer got a text they should not have | Autosend cutover timestamp stale, not refreshed before enabling | `tf_automation_readiness()` → the automation's `verdict` and `cutover_age_hours` |
 | An automation flag is on and nobody armed it | Flag flipped by direct `update`, bypassing `tf_automation_arm` | `tf_automation_out_of_band()`; control `CM-AUTOARM-020` |
 | `42501: permission denied for function` | The function is `admin` tier; you are calling it as `authenticated` | `select tier from tf_function_grant_tiers where proname='<name>'` |
-| A new function is reachable by `anon` and nobody granted it | Supabase `ALTER DEFAULT PRIVILEGES`; `revoke from public` does not undo it | `tf_grant_tier_audit()`; fix with `tf_apply_grant_tier` |
+| A new function is reachable by `anon` and nobody granted it | Supabase `ALTER DEFAULT PRIVILEGES`; `revoke from public` does not undo it, and neither does `revoke from anon` alone, because Postgres grants EXECUTE to PUBLIC on every new function | `tf_grant_tier_audit()`; fix with `tf_apply_grant_tier` |
+| `CM-GRANT-021` evidence says "across N of 84" with N below 84 | somebody created a `tf_*` function without a `tf_apply_grant_tier` call in the same migration | `tf_grant_tier_audit()` → `coverage_pct` and the `violations` array, which names it |
 | Two customer records for one person | Dedup sweep has not run, or phones differ in format | `tf_merge_duplicate_customers(true)` (dry run) |
 | Scheduled report did not arrive in Slack | Cron fired but Slack connector degraded | `tf_scheduler_health()` then the `integration_settings` query above |
 | A `tf_*` call raises `42883` or does something unexpected | The name implies a read; the function is a writer | *The first ten minutes*, side-effect table |
@@ -304,11 +305,15 @@ prose**. They live in
 and control `CM-GRANT-021` fails the board if the live ACL stops matching. The
 full treatment is in `FUNCTION_GRANT_TIERS.md`. The short version:
 
-| Tier | Roles granted | Requires an in-body guard | Typical members |
-| --- | --- | --- | --- |
-| `admin` | `postgres`, `service_role` | no, the grant *is* the control | `tf_automation_arm`, `tf_apply_grant_tier`, `tf_safety_autoticket`, `tf_grant_tier_autoticket`, the queue operators, every `*_sweep` |
-| `staff` | adds `authenticated` | **yes, always** | `tf_grant_tier_audit`, `tf_automation_readiness`, `tf_control_attest`, `tf_owner_dashboard`, `tf_customer_360`, `tf_marketing_roi` |
-| `anon` | adds `anon` | yes | exactly one: `studio_is_staff`, documented below |
+| Tier | Roles granted | Requires an in-body guard | Count | Typical members |
+| --- | --- | --- | --- | --- |
+| `admin` | `postgres`, `service_role` | no, the grant *is* the control | 48 | `tf_automation_arm`, `tf_apply_grant_tier`, `tf_safety_autoticket`, `tf_grant_tier_autoticket`, `tf_vault_set_secret`, the queue operators, every `*_sweep` |
+| `staff` | adds `authenticated` | **yes, always** | 36 | `tf_grant_tier_audit`, `tf_automation_readiness`, `tf_control_attest`, `tf_owner_dashboard`, `tf_customer_360`, `tf_marketing_roi`, `tf_send_intake` |
+| `anon` | adds `anon` | yes | 1 | exactly one: `studio_is_staff`, documented below |
+
+Eighty-five declared rows, covering **84 of 84** `tf_*` functions, `coverage_pct`
+100.0, `violation_total` 0. The eighty-fifth row is `studio_is_staff`, which is
+not a `tf_*` function.
 
 **Why this drifts on its own.** Supabase installs `ALTER DEFAULT PRIVILEGES IN
 SCHEMA public GRANT EXECUTE ON FUNCTIONS TO anon, authenticated`. Those are
@@ -319,6 +324,29 @@ in `public` is therefore reachable by an anonymous caller from the moment it is
 created until something names `anon` explicitly. This is not a Supabase defect,
 it is the platform default, and it is the reason the tier has to be asserted
 rather than assumed.
+
+**And revoking `anon` alone does not close it either.** PostgreSQL grants EXECUTE
+to the PUBLIC pseudo-role on every newly created function, on top of anything
+Supabase installs. Because every role is a member of PUBLIC,
+`has_function_privilege('anon', oid, 'execute')` stays true after
+`revoke execute ... from anon`. Both revokes must appear in one statement. This
+was found by migration 260's fixture-setup assertion, which caught it on the
+person writing the proof harness.
+
+**The coverage defect, closed by migrations 258 through 261.** Through migration
+257 only 18 of the 84 `tf_*` functions carried a declared tier, and the audit's
+undeclared class only looked at functions reachable by `anon`. Since `anon`
+reaches almost nothing here, that class read zero permanently. Sixty-six
+functions were untiered, twenty-seven of them reachable by `authenticated`, and
+the control reported green. **Not declaring a tier was a way to never be checked
+for tier drift**: the checker's coverage was decided by the population being
+checked. 258 declared the full surface at current live reality with a proven
+zero-reachability-change assertion, 259 widened the sweep to
+`anon or authenticated` and added `tf_population_total`, `tf_covered_total` and
+`coverage_pct`, 260 proved the widened sweep by inducing exactly the blind case,
+and 261 widened the two consumers still reading the narrow number. Grants were
+deliberately **not** demoted in bulk, because silently revoking `authenticated`
+from functions the Lovable Hub calls is quiet corruption.
 
 The correct form is `revoke all on function ... from public, anon,
 authenticated;` followed by the intended grant. In practice, never write that by
@@ -533,7 +561,7 @@ event, because the next operator has no way to know whether it was safe.
 
 ## Conventions register
 
-Fourteen times, the highest-yield defect on this platform has been two writers
+Twenty-one conventions. Repeatedly, the highest-yield defect on this platform has been two writers
 each holding a different convention, both correct in isolation, silently
 disagreeing at the seam. Every one of these is now enforced somewhere the
 disagreement becomes an error at write time rather than a discrepancy at read
@@ -560,6 +588,8 @@ time.
 | 17 | Blast-radius predicate arity | every predicate references both `$1` (cutover) and `$2` (company), using the visible tautology where there is no cutover | `tf_automation_blast_radius` executes `using coalesce(v_since, now()), v_company`; a predicate that ignores either one raises at call time |
 | 18 | Registry note currency | the note is part of the change, not documentation of it, and is rewritten in the same transaction as the sweep | `tf_automation_note_drift`, control `CM-NOTEDRIFT-022`, ticket key `safety:note_drift` |
 | 19 | Guard detection as data, matched on code | guard-helper names live in a table, and the match runs against comment-stripped source so a comment cannot stand in for a guard | `tf_guard_predicate_registry`, `tf_guard_pattern`, `tf_strip_sql_comments`, `tf_guard_detection_audit`, control `AC-GUARDREG-023`, ticket key `safety:guard_detection` |
+| 20 | Checker coverage is published, not assumed | a register a checker reads is complete by construction, the audit returns its own `population` / `covered` / `coverage_pct`, and the control's evidence string states its denominator | `tf_grant_tier_audit` coverage keys, the widened `CM-GRANT-021` evidence string, migration 260's induced-failure proof |
+| 21 | Widen a signal, never repurpose a key | a narrowed key keeps its original meaning and the wider key is added beside it, because a redefined key does not break consumers, it makes them quietly wrong | `undeclared_anon_total` retained as a strict subset of `undeclared_reachable_total` across migrations 259 and 261 |
 
 The countermeasure that keeps working is the same every time: express the
 convention in the database, on the *normalised* form of the value, so violation
@@ -795,6 +825,46 @@ partially-failed measurement would have read as a clean result. Fix in migration
 end`, propagate `null` rather than `0`, and report `attention` on null. A zero
 substituted for a failed measurement is a false green, and a false green is worse
 than a red.
+
+**The checker whose coverage was decided by the thing it checked.** This is the
+sibling of the two defects above and the subtlest of the three. `tf_grant_tier_audit`
+had correct rules, a table-driven register, an induced-failure proof from
+migration 248, and a control wired into both CASEs. It reported
+`violation_total: 0` truthfully. It was auditing eighteen of eighty-four
+functions.
+
+The three violation classes were drift on a declared tier, a declaration pointing
+at a missing function, and an undeclared function reachable by `anon`. Read them
+together: a function with no declaration was invisible unless `anon` specifically
+could reach it, and `anon` reaches almost nothing here. **Not declaring a tier was
+a way to opt out of enforcement entirely.** Sixty-six functions were untiered,
+twenty-seven reachable by every signed-in identity in the system, and the
+denominator, eighteen, appeared nowhere a human would read it. The knowledge base
+itself had rationalized the gap in prose as deliberate.
+
+Fix, migrations 258 through 261. Declare the whole surface at *current live
+reality* rather than at an aspirational tier, asserting that not one function's
+reachability changed, because bulk-revoking `authenticated` from functions the
+Hub calls is quiet corruption. Widen the undeclared sweep to
+`anon or authenticated`. Make the audit publish `tf_population_total`,
+`tf_covered_total` and `coverage_pct`. Prove it by inducing a definer function
+reachable by `authenticated` and not by `anon` with no declared tier, asserting
+the old predicate reads zero on it first. Then update every consumer still
+reading the narrow number, additively.
+
+The general shape: **a checker must publish what it found, what it looked at, and
+what it could not see.** A violation count without a denominator is an opinion.
+
+**The half-revoke that revokes nothing.** Found while building the fixture above.
+PostgreSQL grants EXECUTE to the PUBLIC pseudo-role on every newly created
+function, independently of Supabase's named-role default privileges. Because
+every role is a member of PUBLIC, `revoke execute ... from anon` leaves
+`has_function_privilege('anon', oid, 'execute')` true. The platform already
+documented the Supabase half of this trap; the Postgres half defeats the obvious
+fix for the Supabase half. Always
+`revoke all on function ... from public, anon, authenticated` in one statement.
+Migration 260's first attempt failed on this, caught by its own fixture-setup
+assertion, which is the harness working exactly as intended.
 
 ---
 
@@ -1248,14 +1318,15 @@ Read live from the catalog, not counted by hand.
 
 | | Count |
 | --- | --- |
-| Migrations applied | 257 |
+| Migrations applied | 261 |
 | Base tables in `public` | 171 |
 | Tables with RLS enabled | 171 (100%) |
 | RLS policies | 582 |
-| Functions in `public` | 275 |
+| Functions in `public` (`prokind = 'f'`) | 271 |
 | `tf_*` operator functions | 84 |
 | `tf_*` functions declared in `tf_function_registry` | 84 (100%) |
-| Functions with a declared grant tier | 18 |
+| `tf_*` functions with a declared grant tier | 84 (100%) |
+| Declared grant-tier rows | 85 (48 admin / 36 staff / 1 anon) |
 | Views | 7 |
 | Enums | 80 |
 | Indexes | 655 |
@@ -1283,12 +1354,27 @@ ticket under `safety:function_drift` within fifteen minutes if the two counts
 diverge. It did exactly that between migrations 251 and 252; see the
 defect-pattern library.
 
-Eighteen of the eighty-four carry a declared grant tier. That number is
-deliberately smaller than eighty-four and is not a coverage gap: a tier is declared where the
-intended reachability is not obvious from the function's role, and
-`tf_grant_tier_audit()` enforces the declared ones at `violation_total: 0`.
-Widening the declared set is cheap and is the standing recommendation whenever a
-function's audience is argued about twice.
+**All eighty-four now carry a declared grant tier, and this line used to say
+something else.** Through migration 257 the count was eighteen, and this document
+argued that the gap was deliberate: *"a tier is declared where the intended
+reachability is not obvious from the function's role."* That reasoning was wrong,
+and it is left on the record here because the way it was wrong is instructive.
+
+The audit's undeclared class only looked at functions reachable by `anon`, and
+`anon` reaches almost nothing on this platform, so **not declaring a tier was a
+way to never be checked for tier drift at all**. Sixty-six functions were
+untiered, twenty-seven of them reachable by every signed-in identity in the
+system, and `violation_total` read 0 the whole time. The checker's coverage was
+decided by the population it was checking. Migrations 258 through 261 closed it:
+declare the full surface at current live reality, widen the sweep to
+`anon or authenticated`, prove the widened sweep by inducing the exact blind
+case, and update the consumers that were still reading the narrow number.
+`coverage_pct` is now part of the audit payload and part of `CM-GRANT-021`'s
+evidence string, so the denominator can never go unstated again.
+
+The lesson generalizes past grants: **a register a checker reads must be complete
+by construction, or the checker is measuring its own register rather than the
+system.** See `FUNCTION_GRANT_TIERS.md`.
 
 The two controls in `attention` are both owner actions rather than code defects:
 `AC-MFA-003`, one privileged account without MFA, and `DP-PITR-007`,
@@ -1355,7 +1441,7 @@ subject-specific notes beside it in `docs/`:
 - `FUNCTION_GRANT_TIERS.md` — the three-tier grant model, the Supabase default-privileges trap, `CM-GRANT-021`
 - `AUTOMATION_ARMING.md` — the automation registry, the bounding model, the blast-radius predicate contract, the arming sequence and its refusal classes, `CM-NOTEDRIFT-022`
 - `GUARD_DETECTION.md` — how a `SECURITY DEFINER` function is judged guarded, the guard predicate registry, the comment-stripped match, the comments-gated / literals-advisory line, `AC-GUARDREG-023`, and the induced comment-only guard that proves the chain
-- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, and 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`
+- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`, and 258 through 261 with theirs in `FUNCTION_GRANT_TIERS.md`
 
 Notion carries the same material for non-engineers under **🧭 Operations Hub —
 SOPs & FAQs**, with persona-routed SOPs and FAQs. ClickUp carries the
@@ -1525,6 +1611,60 @@ or the incident that reveals which kind you had. Twenty-two controls were
 watching the platform and nothing was watching the thing that decides whether a
 control can see. **Verify the verifier**, then induce the failure and watch it
 get caught.
+
+**Pass 5, 2026-07-25, at migration 261.** Four migrations landed between pass 4
+and pass 5, and like pass 4 they all exist because of one finding. Pass 4 found
+an instrument whose **rules** were wrong. Pass 5 found an instrument whose rules
+were right and whose **coverage** was wrong, and, worse, whose coverage was
+determined by the population it was measuring.
+
+| Claim as published | Live reality | Resolution |
+| --- | --- | --- |
+| "Eighteen of the eighty-four carry a declared grant tier. That number is deliberately smaller than eighty-four and is **not a coverage gap**" | it was exactly a coverage gap. The audit's undeclared class only looked at `anon`-reachable functions, and `anon` reaches almost nothing here, so an undeclared function was simply never checked. 66 untiered, **27 of them reachable by `authenticated`**, `violation_total` 0 throughout | migration 258 declares all 84 at current live reality with a proven zero-reachability-change assertion; 259 widens the sweep to `anon or authenticated` and publishes `coverage_pct` |
+| `CM-GRANT-021` evidence: "N function grant-tier violation(s): live EXECUTE grants versus `tf_function_grant_tiers`" | a violation count with no denominator. A reader could not tell 0-of-84 from 0-of-18 | migration 261: the evidence now reads "0 function grant-tier violation(s) **across 84 of 84 tf_\* fn(s) declared (100.0 pct)**: ... plus any fn reachable by anon or authenticated with no declared tier" |
+| `tf_grant_tier_autoticket` assumed correct because `CM-GRANT-021` was passing | its ticket body, its auto-close message and one return key all read `undeclared_anon_total`, a subset that is 0 on this platform always. A real undeclared function would have opened a ticket saying `Undeclared: 0` and auto-closed on a property nobody had measured | migration 261 widens all three to `undeclared_reachable_total`, adds the anon subset as a second line, adds a `Surface measured` line, and keeps `undeclared_anon_total` in the payload with its original meaning so no consumer breaks |
+| "`revoke ... from anon` closes an anon hole" | Postgres grants EXECUTE to PUBLIC on every new function, so `anon` still executes through PUBLIC and `has_function_privilege` stays true | documented as a convention; `revoke all ... from public, anon, authenticated` in one statement, always |
+| Migrations 257, tiers 18, conventions 19 | 261 / 85 rows over 84 functions / 21 | inventory, conventions register and the grant-tier document re-read and re-counted |
+
+**Measured exposure, again with a number.** 84 `tf_*` functions, 18 declared, 66
+undeclared, 27 of those reachable by `authenticated`, 0 by `anon`, and therefore
+0 violations reported. As with passes 3 and 4 the hazard was latent rather than
+realized: every one of the 27 carries an in-body guard, `AC-DEFN-017` was and is
+`passing`, and no cross-tenant read was ever possible through them. What was
+missing was any mechanism that would have **told** us if the twenty-eighth had
+not.
+
+The deliberate non-action is the part worth remembering. The obvious fix, revoke
+`authenticated` from all 27, would have broken the Lovable Hub silently and
+unattributably. Declaring at current reality first, then demoting individually
+with evidence, is slower and is the only version that does not trade a latent
+hazard for a live outage.
+
+Two conventions went into the register this pass, numbers 20 and 21: **checker
+coverage is published, not assumed**, and **widen a signal, never repurpose a
+key**. Two defect classes went into the library: **the checker whose coverage was
+decided by the thing it checked**, and **the half-revoke that revokes nothing**.
+
+Everything re-measured this pass agreed on the second reading:
+`tf_function_safety_audit()` returned 84 functions, 55 writers, 29 reads, 7
+transitive writers, 20 documented diagnostics, `undeclared_total` 0, `drift` 0,
+`stale` 0, diagnostic violations 0, misleading names 7.
+`tf_grant_tier_audit()` returned `violation_total: 0` across **85 declared rows
+covering 84 of 84 `tf_*` functions at `coverage_pct` 100.0**.
+`tf_automation_note_drift()` returned `drift_count: 0`. `tf_security_scan()`
+returned `gap_total: 0`. `tf_guard_detection_audit()` returned 15 registry
+helpers, 0 unguarded, 0 comment-only, 0 literal-only, 0 integrity violations.
+23 controls, 21 passing, 2 attention, 0 failing. All thirteen automation flags
+read `false`.
+
+The finding worth carrying forward: pass 4's lesson was *verify the verifier*.
+Pass 5's is that verifying the verifier includes asking **what the verifier is
+pointed at**. Correct rules over a partial surface produce a number that is true,
+green, defensible in an audit, and load-bearing for a claim it does not support.
+The countermeasure is structural rather than procedural: the register must be
+complete by construction, the audit must return its own coverage, and the
+control's evidence string must carry the denominator, so that partial coverage is
+visible in the same glance as the result.
 
 ---
 

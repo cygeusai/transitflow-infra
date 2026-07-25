@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (223 migrations
+The full, ordered migration history of the Transit & Flow backend (231 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -106,6 +106,14 @@ of what exists so nothing is silently dropped.
 | 221 | 20260725023406 | fix_linkage_guard_arity |
 | 222 | 20260725023419 | fix_linkage_uuid_aggregate |
 | 223 | 20260725023458 | linkage_sweep_reentrant_temp_tables |
+| 224 | 20260725091758 | security_scan_fifth_axis_and_gap_total |
+| 225 | 20260725091845 | guard_unguarded_definer_business_functions |
+| 226 | 20260725091919 | tf_queue_health_v5_production_scoped_verdict |
+| 227 | 20260725092053 | cygeus_0013_auth_org_membership_fallback |
+| 228 | 20260725092629 | grc_control_ac_defn_017_definer_authorization |
+| 229 | 20260725092821 | queue_lane_registry_and_health_v6_orphan_lanes |
+| 230 | 20260725093324 | fix_queue_lane_registry_enum_type_and_full_seed |
+| 231 | 20260725093446 | tf_queue_health_v7_honest_orphan_evidence_and_registry_gap |
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

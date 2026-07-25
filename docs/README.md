@@ -23,6 +23,15 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - List: "Property Management — Roadmap & Ops" (roadmap, action items, defects).
 - Doc: "Property Management & Portals — Ops Reference".
 
+## Start here
+
+- [`PLATFORM_KNOWLEDGE_BASE.md`](./PLATFORM_KNOWLEDGE_BASE.md) — **the operator
+  wiki.** First-ten-minutes triage, symptom routing table, every health
+  component explained, the guard model, the queue, the conventions register, the
+  defect-pattern library, all scheduled work, and the open owner-action register.
+  Written to be read at 2am by someone who did not build the platform. Every
+  other note in this folder is a deep dive on one section of it.
+
 ## Platform engineering notes (this folder)
 - [`CUSTOMER_360.md`](./CUSTOMER_360.md) — customer read model, index + 360 RPCs
 - [`JOB_PREP_INTAKE.md`](./JOB_PREP_INTAKE.md) — prep-text guard ladder, reminder ladder, expiry
@@ -32,8 +41,20 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - [`IT_GOVERNANCE_GRC.md`](./IT_GOVERNANCE_GRC.md) — controls, access certification, SLOs
 - [`MARKETING_ROI_AND_REVENUE.md`](./MARKETING_ROI_AND_REVENUE.md) — collected-revenue convention, channel P&L
 - [`REVENUE_LINKAGE.md`](./REVENUE_LINKAGE.md) — invoice-to-job sweep, natural-key integrity, traceability
+- [`SECURITY_GUARDS_AND_QUEUE_LANES.md`](./SECURITY_GUARDS_AND_QUEUE_LANES.md) — definer-guard axis, `AC-DEFN-017`, queue lane registry, orphan reason codes
+
+## Interactive artifacts (this folder)
+Self-contained HTML. Open directly in a browser, no build step, no network.
+- [`COMMAND_CENTER.html`](./COMMAND_CENTER.html) — executive command center
+- [`ONCALL_RUNBOOK.html`](./ONCALL_RUNBOOK.html) — operations & on-call runbook
+- [`data-engineering-report.html`](./data-engineering-report.html) — data-engineering assessment
+- [`data-model-erd.html`](./data-model-erd.html) — entity-relationship diagram
 
 ## Conventions
 - The database is the source of truth for access control (RLS).
 - Documents are generated from `document_templates` + shortcodes, not hard-coded.
 - Finance truth comes from QuickBooks; PM income/expense from the lease ledger.
+- Phone identity is `right(regexp_replace(phone,'\D','','g'), 10)`.
+- Collected revenue is `total_amount - balance`. Never `total_amount`.
+- A migration that creates or replaces a function must CALL it in a `do $drive$`
+  post-check and assert on the output. Inspecting the catalog is not verification.

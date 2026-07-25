@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (283 migrations
+The full, ordered migration history of the Transit & Flow backend (287 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -166,6 +166,10 @@ of what exists so nothing is silently dropped.
 | 281 | 20260725150253 | retire_security_scan_exemptions_that_suppress_nothing |
 | 282 | 20260725150606 | security_scan_exemptions_refuse_rows_that_suppress_nothing |
 | 283 | 20260725150711 | security_scan_monitors_truncate_grants_and_separates_unreachable_tables_from_unpoliced_ones |
+| 284 | 20260725152401 | controls_listen_to_the_security_scan_refusal_and_its_two_unread_axes |
+| 285 | 20260725152534 | detect_the_axis_that_nobody_reads |
+| 286 | 20260725152754 | declare_the_signal_coverage_reader_in_the_function_registry |
+| 287 | 20260725152915 | the_unread_axis_detector_is_itself_read |
 
 > **Migrations 270 through 277 were applied by two agents interleaved into one
 > version stream, and that is itself the finding.** Four of these eight (270,
@@ -427,6 +431,29 @@ of what exists so nothing is silently dropped.
 > client role can reach is no longer counted the same as one that is genuinely
 > unpoliced. The reasoning, the assertions and the runbook are in
 > [`docs/SECURITY_SCAN_INTEGRITY.md`](../../docs/SECURITY_SCAN_INTEGRITY.md).
+
+> **Migrations 284 through 287 are one change**, split into four because the
+> third of them exists only because the second one's assertion refused. 284
+> teaches `tf_controls_evaluate` to honour the scan's `ok` flag, which it had
+> never done because that flag was added in migration 280 after the migration 269
+> consumer sweep had already run, and adds `CM-TRUNCGRANT-024` over
+> `tables_truncatable_by_client` and `CM-SCANINTEG-025` over the scan's own
+> integrity totals. Three security controls could previously render `passing`
+> against a scan that had declared itself untrustworthy. 285 escalates from the
+> instances to the class: `tf_controls_signal_coverage()` reads the scan's
+> declared axis list against the **catalog definition** of the consumer, not a
+> register, per the seeded-register lesson of migration 276, and names any axis
+> nobody renders. 286 exists because 285 created a `tf_*` function without a
+> `tf_function_registry` row, which drove `CM-FNDRIFT-018` to `failing` and rolled
+> the wiring migration back on its own aggregate assertion. That failure produced
+> **the three obligations of creating a `tf_*` function** and **house rule
+> seventeen**: a migration that touches the control register must assert the
+> register's aggregate state before it commits, not just the row it changed. 287
+> then wires the detector into `CM-SIGNALCOV-026` so the detector is not itself an
+> unread signal. The register moved 23 controls with 1 failing to **26 with 0
+> failing**. The reasoning, the prefix-collision gotcha, the five refusal codes
+> and the runbook are in
+> [`docs/CONTROL_SIGNAL_COVERAGE.md`](../../docs/CONTROL_SIGNAL_COVERAGE.md).
 
 > **Migrations 253 through 257 are one change**, split into five so each half of
 > the work could be asserted before the next was applied. They move guard

@@ -456,10 +456,17 @@ select (public.tf_security_scan())->'tables_truncatable_by_client',
 
 ## Open items
 
-- **`tf_controls_evaluate` has no control on the new axes.** Neither
-  `tables_truncatable_by_client` nor the scan's own `integrity_total` is wired
-  to a control row yet. The scan refuses correctly and nothing reads the
-  refusal. That is the exact defect migration 269 closed elsewhere.
+- ~~**`tf_controls_evaluate` has no control on the new axes.**~~ **Closed by
+  migrations 284 through 287.** `tables_truncatable_by_client` is now read by
+  `CM-TRUNCGRANT-024`, the scan's `integrity_total` plus `stale_exemption_total`
+  by `CM-SCANINTEG-025`, and the refusal flag itself now gates every scan-derived
+  status. Migration 285 went further and built `tf_controls_signal_coverage()`,
+  which detects the class rather than the instances: it compares the scan's
+  declared axis list against the catalog definition of `tf_controls_evaluate` and
+  names any axis nobody renders. Migration 287 wired that detector into
+  `CM-SIGNALCOV-026` so the detector is not itself an unread signal. Live:
+  `unread_total 0`, `refusal_flag_honoured true`, `gap_total 0` over 6 axes. Read
+  `docs/CONTROL_SIGNAL_COVERAGE.md`.
 - **`it_controls.status` is a cache with no freshness gate.** The board can
   render a stale evaluation as authoritative. Publish `evaluated_at` staleness
   and refuse to render past a threshold.
@@ -484,5 +491,8 @@ select (public.tf_security_scan())->'tables_truncatable_by_client',
   savepoint-probe technique reused here
 - `docs/FUNCTION_GRANT_TIERS.md` — `tf_apply_grant_tier` and the PUBLIC twin
   gotcha that the creation exposure window depends on
+- `docs/CONTROL_SIGNAL_COVERAGE.md` — migrations 284 through 287, which wire the
+  axes this document declares into control rows and then detect the class of
+  defect where an axis has no consumer at all
 - `docs/PLATFORM_KNOWLEDGE_BASE.md` — conventions, house rules and the Pass 10
-  verification log
+  and Pass 11 verification logs

@@ -4,7 +4,7 @@ The single troubleshooting reference for the Transit & Flow backend. Written to
 be read at 2am by someone who did not build it.
 
 State captured 2026-07-25 against Supabase project `kjooyhvynkzuvsixsutt` at
-migration 283. Every number in this document was read out of the live database,
+migration 287. Every number in this document was read out of the live database,
 not remembered.
 
 Migrations 270 through 279 were applied by **two agents interleaved into one
@@ -208,6 +208,12 @@ Routed by what you observe. Each row names the check to run first.
 | `insert into security_scan_exemptions` raises `A one line reason is not a review` | the `reason` is under 40 characters | write the review: what the function exposes, why that is acceptable, and what was checked. The length floor is a proxy for the thinking, not the point of it |
 | A new `SECURITY DEFINER` function shows up in `secdef_authenticated_no_guard` moments after deployment | the grant tier was applied in a later migration than the create, so the function sat in the creation exposure window | house rule fifteen. Apply `tf_apply_grant_tier` in the same transaction as `CREATE FUNCTION` |
 | A table is emptied and no RLS policy could have allowed it | `TRUNCATE` does not visit rows, so no policy constrains it | `select count(*) from pg_class c where c.relnamespace='public'::regnamespace and c.relkind='r' and has_table_privilege('authenticated', c.oid, 'TRUNCATE')`, expect 0 since migration 272 |
+| A migration raises `P0001: controls left failing after this migration` and the control it wrote is correct | a **different** control regressed, almost always `CM-FNDRIFT-018` because a `tf_*` function was created without a `tf_function_registry` row | run `select public.tf_function_safety_audit()` and read the `undeclared` array, which names the function. Declare it, then re-submit. Convention 33 and house rule seventeen |
+| `tf_controls_signal_coverage()` returns `unread_total` above 0 | a checker declares a detection axis that no control's status or evidence CASE references, so the finding is computed and never rendered | `unread_axes` names them. Wire each into a control's status branch in `tf_controls_evaluate`, or state in writing why it is deliberately unrendered. Convention 31 |
+| `tf_controls_signal_coverage()` returns `refusal_flag_honoured: false` | `tf_controls_evaluate` reads `tf_security_scan` without gating on the scan's `ok` flag, so a refusing scan renders as `passing` | re-read `pg_get_functiondef('public.tf_controls_evaluate'::regproc)` and confirm the `coalesce(v_scan_raw->>'ok','false') <> 'true'` gate is present. This is the migration 284 finding; convention 26 |
+| `tf_controls_signal_coverage()` returns `ok: false` with `scan_published_no_axis_list` or `axis_list_empty` | the deployed `tf_security_scan` body predates migration 280 or its `axes` array is empty, so coverage cannot be measured over anything | the checker refuses rather than reporting zero unread axes over zero axes. Same undeclared-denominator logic as convention 29, applied to itself |
+| `tf_controls_signal_coverage()` returns `ok: false` with `consumer_not_found` | `tf_controls_evaluate` is absent from `pg_proc`, or is not `prokind = 'f'` | the coverage checker resolves its consumer by catalog lookup, not by name string. If this fires, the evaluator has been dropped and the whole control board is dark |
+| A coverage check reports an axis as read when nothing reads it | the axis name is a strict prefix of a sibling axis, which convention 21 guarantees will keep occurring, and the match was against the bare identifier | match the axis name wrapped in single quotes so the needle is the SQL literal. **The prefix-collision gotcha** |
 
 ---
 
@@ -675,6 +681,10 @@ time.
 | 29 | A checker must publish the population it counted over | every gap count is accompanied by the denominator that produced it, and a checker whose population comes back empty raises rather than returning zero; the declared axis list and the computed axis object are coupled by an assertion so an axis cannot be declared and left out of the total, nor computed and left out of the declaration | `tf_security_scan()` `population` block and empty-population raise since migration 280; `gap_total` derived by iterating `v_axis_order` rather than summing named variables; the same shape already in `tf_grant_tier_audit` and `tf_guard_detection_audit` |
 | 30 | An exemption must suppress something, or it is a trap | a standing exemption over a function that is already guarded hides the finding the day the guard is removed; staleness is detected by the exact inverse of the axis predicate, published as its own count, escalated into `ok: false`, and refused at write time by a validating trigger that also requires a reason long enough to be a review | `tf_security_scan()` `stale_exemptions` and the `stale_exemptions_present` integrity error since migration 280; two live rows retired by migration 281; `tf_security_scan_exemption_validate` since migration 282, proved by three inductions |
 
+| 31 | Every declared detection axis has a consumer that renders it | detection without consumption is not a control, it is a log line; the axis list a checker publishes is matched against the **catalog definition** of its consumer, not against a register, and any axis nobody renders is a gap that fails a control of its own | `tf_controls_signal_coverage()` since migration 285, read by `CM-SIGNALCOV-026` since migration 287; live `unread_total 0` over 6 declared axes. The match uses the axis name wrapped in single quotes, because convention 21 creates names that are strict prefixes of one another and a bare substring match reports the short name as read when only the long one is referenced |
+| 32 | A checker that reports on refusals is not gated on its own refusal flag | every other consumer treats `ok: false` as null per convention 26, but the checker whose job is to notice unheard refusals must run and report regardless, or the failure it exists to surface is the failure that silences it | `tf_controls_signal_coverage()` is deliberately ungated on `tf_security_scan`'s `ok` flag and instead publishes `refusal_flag_honoured`, a boolean read out of the consumer's catalog text, plus five distinct refusal codes of its own |
+| 33 | Creating a `tf_*` function carries three obligations in the same migration | apply a grant tier, declare the function in `tf_function_registry`, and wire its signal into a control; only the first is structurally enforced today, the second and third are detected after the fact | tier enforced and asserted since migration 282, detected by `tf_grant_tier_audit` `uncovered_total`; declaration detected by `tf_function_safety_audit` `undeclared_total`, which is what rolled migration 287's first attempt back; signal wiring detected by `tf_controls_signal_coverage` for scan axes only |
+
 The countermeasure that keeps working is the same every time: express the
 convention in the database, on the *normalised* form of the value, so violation
 is impossible rather than merely discouraged.
@@ -697,6 +707,53 @@ inspected, queried, and extended by an operator at 2am.
 ## Defect-pattern library
 
 The recurring shapes. Recognising one of these saves an hour.
+
+**The unread axis.** A checker gains a new detection axis. The axis is computed
+correctly, summed into the total correctly, published correctly, and nothing
+downstream renders it. The board stays green because no control's status
+depends on it. Migration 283 added `tables_truncatable_by_client` and migration
+284 found it unread, along with `rls_enabled_no_policy_reachable` from the same
+batch. Fix, now convention 31: match the checker's declared axis list against the
+catalog definition of its consumer and fail a control when any axis has no
+reader. The generalisation is the sentence the whole batch turns on: *detection
+without consumption is not a control.*
+
+**The refusal reporter gated on its own flag.** Convention 26 says a consumer
+treats `ok: false` as null so the control reads `attention` rather than
+`passing`. Apply that uniformly and the checker whose job is to notice unheard
+refusals goes quiet exactly when refusals start happening. The coverage checker
+is therefore deliberately ungated and publishes `refusal_flag_honoured` as an
+observation rather than consuming it. Recognise the shape whenever a monitor
+monitors the thing it depends on.
+
+**The consumer that was swept before the signal existed.** Migration 269 taught
+all six control consumers to honour their checker's `ok` flag. Migration 280 then
+*added* an `ok` flag to `tf_security_scan`, which had not had one during the
+sweep. Three security controls were left reading past a refusal into a
+`coalesce(..., 0)` for four migrations. A remediation sweep is correct only over
+the population that existed when it ran. Any signal added afterwards is
+unswept by construction. Fix: when a checker gains a refusal channel, re-run the
+consumer sweep as part of the same batch, and assert the count of the gating
+idiom in the deployed body rather than trusting the edit.
+
+**The prefix-collision needle.** Convention 21 requires a refined axis to sit
+beside the original rather than replace it, which produces names where one is a
+strict prefix of another: `rls_enabled_no_policy` and
+`rls_enabled_no_policy_reachable`. A textual coverage check on the bare name
+matches the longer string and reports the shorter axis as read when nothing reads
+it. Fix: wrap the needle in single quotes, `'''' || v_axis || ''''`, so the match
+is against the SQL literal rather than the identifier fragment. Any code that
+searches for one convention-21 name inside a body containing its sibling has this
+bug until proved otherwise.
+
+**The undeclared new function.** A migration creates a `tf_*` function, applies
+its grant tier correctly, and stops. The `tf_function_registry` row is missing,
+`tf_function_safety_audit` reports `undeclared_total: 1`, and `CM-FNDRIFT-018`
+goes `failing` in a **later** migration that has nothing to do with the omission.
+Symptom: `P0001: controls left failing after this migration` on a migration whose
+own row is correct. Fix: convention 33, three obligations in the same migration.
+Diagnosis: run `tf_function_safety_audit()` and read the `undeclared` array,
+which names the function.
 
 **The undeclared denominator.** A checker publishes a count of findings and never
 says what it counted over. Zero findings over an empty population is byte-identical
@@ -1166,7 +1223,28 @@ because the first cannot be enforced against an agent that has SQL access.
 
 ## The house rules
 
-Sixteen rules, each of which exists because breaking it cost real time.
+Seventeen rules, each of which exists because breaking it cost real time.
+
+**Seventeen. A migration that touches the control register asserts the
+register's aggregate state before it commits, not the state of the row it
+changed.** Migration 287's first attempt rolled back on its own final assertion,
+`controls left failing after this migration: {"total": 26, "failing": 1, ...}`.
+The row it had just written was correct. A **different** control,
+`CM-FNDRIFT-018`, had gone `failing` because migration 285 created
+`tf_controls_signal_coverage` without a `tf_function_registry` row, and
+`tf_function_safety_audit` had duly reported `undeclared_total: 1`. A per-row
+assertion sees none of that. Cross-control regressions are invisible to anything
+that only looks at what it changed, and the register would have carried a
+silently failing control until the next manual review. The assertion is one
+line:
+
+```sql
+if coalesce((v_sum->>'failing')::int, -1) <> 0 then
+  raise exception 'controls left failing after this migration: %', v_sum::text;
+end if;
+```
+
+That line paid for itself the first time it ran.
 
 **Fifteen. Apply the grant tier in the same migration that creates the function,
 never in a follow-up.** Proven by assertion in migration 282. Postgres grants
@@ -1669,12 +1747,36 @@ from public.auto_tickets order by created_at;
 
 ### GRC controls
 
-23 controls, 21 `passing`, 2 `attention`, 0 `failing`. The two in `attention` are
-AC-MFA-003 and DP-PITR-007, which are owner actions 3 and 4 above. Evaluated
-monthly by `tf-controls-evaluate-monthly`, and on demand by
-`tf_controls_evaluate()`, which is a writer.
+**26 controls, 23 `passing`, 3 `attention`, 0 `failing`** as of migration 287.
+The three in `attention` are `AC-PRIV-002` (one intentionally anon-exposed
+definer function, carrying a live exemption row that suppresses a real finding),
+`AC-MFA-003` and `DP-PITR-007`, the latter two being owner actions 3 and 4 above.
+Evaluated monthly by `tf-controls-evaluate-monthly`, and on demand by
+`tf_controls_evaluate()`, which is a writer and takes no arguments.
 
-The six most recently added controls are the convention-enforcement tier:
+Six of the 26 are manual and **none of the six has ever been attested**. That is
+counted rather than assumed, and it is an owner action, not an engineering one.
+
+The three most recently added are the signal-consumption tier, all owned by
+`CISO`, all automated, added by migrations 284 and 287:
+
+- `CM-TRUNCGRANT-024` — privileges outside the RLS-evaluated set are not held by
+  client roles. Reads `tf_security_scan` `tables_truncatable_by_client`, which
+  monitors the migration 272 hardening. Live 0.
+- `CM-SCANINTEG-025` — the security scan vouches for its own population and its
+  refusals are heard. Reads `integrity_total` plus `stale_exemption_total`, and
+  is the reason the evaluator now honours the scan's `ok` flag at all.
+- `CM-SIGNALCOV-026` — every declared detection axis has a consumer that renders
+  it. Reads `tf_controls_signal_coverage` `gap_total`. Live 0 over 6 axes.
+
+The structural change in that batch matters more than the three rows.
+`tf_controls_evaluate` had never honoured `tf_security_scan`'s `ok` flag, because
+that flag was added in migration 280 **after** the migration 269 sweep that
+taught the other consumers to stop reading past a refusal. Three security
+controls could have rendered `passing` against a scan that had declared itself
+untrustworthy. See `docs/CONTROL_SIGNAL_COVERAGE.md`.
+
+The six controls before those are the convention-enforcement tier:
 `AC-DEFN-017` (definer authorization), `CM-FNDRIFT-018` (function register
 drift), `CM-AUTOARM-020` (out-of-band arming), `CM-GRANT-021` (grant tier drift),
 `CM-NOTEDRIFT-022` (registry notes agree with the catalog) and
@@ -2423,6 +2525,72 @@ onto the two unread signals, then put a staleness threshold on
 deployment-coordination decision, ClickUp `86bb3etah`, which pass 9 named the
 largest unmitigated governance risk in the backend and which pass 10 did nothing
 to reduce.
+
+**Pass 11, 2026-07-25, at migration 287.** Pass 10 ended by naming two unread
+signals and asking for two control rows. Pass 11 wired them, then found a third
+defect underneath that was larger than either, then escalated from fixing
+instances to detecting the class. Ordinals 284 through 287 are contiguous with no
+concurrent-agent interleave.
+
+| Claim carried into this pass | What the catalog said | Resolution |
+| --- | --- | --- |
+| Two axes are unread, wire two controls and the batch is done | three signals were unread, not two. `rls_enabled_no_policy_reachable` had been added by migration 283 in the same breath as `tables_truncatable_by_client` and was equally unconsumed, so `AC-RLS-001` was still weighing the superset and reading a correctly-built table as a gap | migration 284 moved `AC-RLS-001` onto the reachable subset while keeping both numbers plus the 174-table denominator in its evidence string, so the correction is auditable rather than silent |
+| The consumers were swept for refusal handling by migration 269, so scan-derived controls honour `ok: false` | `tf_security_scan` had no `ok` flag when that sweep ran. It gained one in migration 280, four migrations later, and nothing went back. Three security controls would have rendered `passing` against a scan that had declared itself untrustworthy | migration 284 split `v_scan_raw` from `v_scan`, gating every scan-derived status on the refusal flag, and added `CM-SCANINTEG-025` so the refusal itself has a control. A remediation sweep is correct only over the population that existed when it ran |
+| Wiring the three controls closes the finding | it closes three instances of a class that had already recurred twice within a day, on migration 269 and again on migration 283. The wiring step was a follow-up rather than part of the axis-adding procedure, and follow-ups get dropped | migration 285 built `tf_controls_signal_coverage()`, which matches the scan's declared axis list against the **catalog definition** of `tf_controls_evaluate`, per the migration 276 rule that agreement between a checker and a register it wrote is not corroboration. It would have caught migration 283's unread axis the day it landed |
+| The coverage checker should be gated on the scan's `ok` flag like every other consumer, per convention 26 | applying convention 26 here would silence the checker exactly when refusals start happening, because its whole purpose is to notice unheard refusals | deliberately ungated, with five refusal codes of its own and `refusal_flag_honoured` published as an observation read out of the consumer's catalog text. Convention 32 |
+| A substring search for the axis name proves the axis is read | `rls_enabled_no_policy` is a strict prefix of `rls_enabled_no_policy_reachable`, which convention 21 guarantees will keep happening. A bare match reports the short axis as read when only the long one is referenced | the needle is wrapped in single quotes, `'''' \|\| v_axis \|\| ''''`, matching the SQL literal rather than the identifier fragment. **The prefix-collision gotcha** |
+| The wiring migration is a clean re-submit | it rolled back on its own final assertion, `controls left failing: {"total": 26, "failing": 1}`. The failing control was `CM-FNDRIFT-018`, not the one being written. Migration 285 had created a `tf_*` function with a correct grant tier and no `tf_function_registry` row | house rule sixteen applied. `tf_function_safety_audit()` named `tf_controls_signal_coverage` in its `undeclared` array. Migration 286 declared it, migration 287 re-submitted unchanged and passed. That failure produced **the three obligations** and **house rule seventeen** |
+| Replacing `tf_controls_evaluate` reopens the creation exposure window | `CREATE OR REPLACE` preserves the existing ACL. Only `CREATE` installs the default grants | asserted live in migration 287: `has_function_privilege('authenticated', oid, 'EXECUTE')` reads false immediately after the replace. House rule fifteen applies to creates, not replaces, and that distinction is now proved rather than assumed |
+
+| Verified at the start of this pass | Verified at the end | What was re-read |
+| --- | --- | --- |
+| Migrations 283, conventions 30, house rules 16, controls 23, axes 6 | 287 / 33 / 17 / 26 / 6 | inventory, conventions register, house rules, defect-pattern library, symptoms table, open register, `SECURITY_SCAN_INTEGRITY.md`, `LEAST_PRIVILEGE_TABLE_GRANTS.md`, `IT_GOVERNANCE_GRC.md`, and a new `CONTROL_SIGNAL_COVERAGE.md` |
+
+Live state at 15:29:26Z. `tf_controls_evaluate()`: 26 controls, 23 passing,
+**0 failing**, 3 attention, 20 automated, 6 manual and all 6 never attested.
+`tf_controls_signal_coverage()`: `ok true`, `declared_axes 6`, `unread_total 0`,
+`unread_axes []`, `refusal_flag_honoured true`, `gap_total 0`.
+`tf_grant_tier_audit()`: `ok true`, 100 pct coverage over 93 functions, zero
+violations, zero missing, zero uncovered, zero drift.
+`tf_function_safety_audit()`: 93 functions, 32 reads, 61 writers, 6 trigger
+writers, 7 transitive writers, `undeclared_total 0`, `drift_total 0`.
+`tf_security_scan()`: `ok true`, `integrity_total 0`, `gap_total 2`,
+`rls_enabled_no_policy_reachable 0`, `tables_truncatable_by_client 0`,
+population 174 tables and 120 definer functions.
+
+Three results from this pass are worth carrying forward.
+
+The first is the sentence the batch turns on: **detection without consumption is
+not a control**. A checker that finds something and publishes it has done nothing
+at all unless something downstream turns that publication into a status a human
+acts on. Every finding in this pass is a variation on it. The generalisation is
+that adding an axis and wiring an axis are one change, not two, because the
+second half of a two-part change is the half that gets dropped.
+
+The second is that **a remediation sweep ages**. Migration 269 swept six
+consumers for refusal handling and was correct on the day. Migration 280 added a
+refusal channel to a seventh signal and the sweep did not extend to cover it,
+because a sweep is a snapshot and nothing marks it stale. The countermeasure is
+not diligence, it is a checker: when the property a sweep established can be
+expressed as a predicate over the live catalog, express it, and the sweep becomes
+a control instead of an event.
+
+The third is that **house rule seventeen paid for itself on its first run**.
+Without the aggregate assertion the register would have carried a silently
+failing control until somebody looked. The per-row assertion that the batch
+started with would have passed, and been wrong.
+
+The sweep resumes at the freshness gate, now the oldest untouched item in this
+chain: `it_controls.status` is a cache with no staleness concept, so the board
+can render an evaluation from any point in the past as current. Behind it sit
+axis lists for the other four checkers, `tf_grant_tier_audit`,
+`tf_function_safety_audit`, `tf_guard_detection_audit` and
+`tf_automation_note_drift`, none of which publish a machine-readable `axes` array
+and none of which can therefore be coverage-checked; and an event trigger on
+`ddl_command_end` to make obligation two structural rather than detected. Behind
+all of it sits ClickUp `86bb3etah`, the deployment-coordination decision, which
+pass 9 named the largest unmitigated governance risk in the backend and which
+passes 10 and 11 have both left untouched.
 
 ---
 

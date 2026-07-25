@@ -50,6 +50,8 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - [`LEAST_PRIVILEGE_TABLE_GRANTS.md`](./LEAST_PRIVILEGE_TABLE_GRANTS.md) — **the privilege RLS does not gate.** `TRUNCATE` does not visit rows, so no policy can constrain it, and 172 of 173 tables granted it to `authenticated`; the revoke in migration 272, the `TRIGGER` / `REFERENCES` / `MAINTAIN` companions, the `supabase_admin` default-ACL residual that would silently restore it, the scanner axis added by migration 283 that now monitors it, and the evidence the hardening held when a different agent granted `anon` insert access four migrations later
 - [`SECURITY_SCAN_INTEGRITY.md`](./SECURITY_SCAN_INTEGRITY.md) — **the scan that could not tell "hardened" from "empty".** `tf_security_scan()` published `gap_total` without ever declaring what it counted over, so zero gaps over an empty population was indistinguishable from zero gaps over a clean one. Migrations 280 through 283 add the `population` block and a hard `raise` on the empty case, derive `gap_total` by iterating the declared axis list so an axis cannot be declared and left out of the sum, add an `ok: false` refusal ladder, retire **the exemption that suppresses nothing** (a standing exemption over an already-guarded function is not redundant, it hides the finding the day the guard is removed), attach a validating trigger that refuses new ones, prove **the creation exposure window** at both ends (a `SECURITY DEFINER` function is reachable by `anon` and `authenticated` from `CREATE FUNCTION` until `tf_apply_grant_tier`), and add the sixth axis `tables_truncatable_by_client` alongside a decomposition that separates a table no client role can reach from one that is genuinely unpoliced
 
+- [`CONTROL_SIGNAL_COVERAGE.md`](./CONTROL_SIGNAL_COVERAGE.md) — **detection without consumption is not a control.** A checker that finds something and publishes it has done nothing at all unless something downstream turns that publication into a status a human acts on. Migration 283 added a sixth detection axis and nothing read it; worse, `tf_controls_evaluate` had never honoured `tf_security_scan`'s `ok` flag because that flag landed in migration 280, after the migration 269 consumer sweep, so three security controls could render `passing` against a scan that had declared itself untrustworthy. Migrations 284 through 287 wire `CM-TRUNCGRANT-024`, `CM-SCANINTEG-025` and `CM-SIGNALCOV-026`, correct the `AC-RLS-001` false positive by weighing the reachable subset while keeping both numbers in evidence, and escalate from the instances to the class with `tf_controls_signal_coverage()`, which matches the scan's declared axis list against the **catalog definition** of its consumer rather than a register. Also: **the three obligations of creating a `tf_*` function**, **house rule seventeen** (assert the register's aggregate state, not the row you changed), and **the prefix-collision gotcha** that makes a bare substring match report a short axis name as read when only its longer sibling is referenced
+
 ## Interactive artifacts (this folder)
 Self-contained HTML. Open directly in a browser, no build step, no network.
 - [`COMMAND_CENTER.html`](./COMMAND_CENTER.html) — executive command center
@@ -69,6 +71,17 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
   guarded function hides the finding the day the guard is removed.
 - Decompose a checker's counts, never narrow them. Add the refined subset beside
   the original key so every existing consumer keeps reading the same number.
+- Every axis a checker declares must have a consumer that renders it. Detection
+  without consumption is not a control, it is a log line. When a checker gains an
+  axis, the same batch wires it to a control row.
+- A checker that reports on refusals must not be gated on its own refusal flag,
+  or the failure it exists to surface silences it.
+- Creating a `tf_*` function carries three obligations in the same migration:
+  apply a grant tier, declare it in `tf_function_registry`, and wire its signal
+  into a control. Only the first is structurally enforced today.
+- A migration that touches the control register asserts the register's
+  **aggregate** state before it commits. A per-row assertion cannot see a
+  cross-control regression.
 - The database is the source of truth for access control (RLS).
 - Documents are generated from `document_templates` + shortcodes, not hard-coded.
 - Finance truth comes from QuickBooks; PM income/expense from the lease ledger.

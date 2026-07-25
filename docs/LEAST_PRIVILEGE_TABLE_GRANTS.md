@@ -1,8 +1,9 @@
 # Least-Privilege Table Grants — the privilege RLS does not gate
 
-Row Level Security is the backbone of tenant isolation on this platform. 173 of
-173 base tables in `public` have it enabled, with 582 policies across them. That
-is the control everyone looks at.
+Row Level Security is the backbone of tenant isolation on this platform. Every
+base table in `public` has it enabled, 173 of 173 at the time of the finding and
+174 of 174 as of migration 287, with 582 policies across them. That is the
+control everyone looks at.
 
 `TRUNCATE` is not subject to it.
 
@@ -100,7 +101,10 @@ select
     where c.relnamespace='public'::regnamespace and c.relkind='r') as tables_total;
 ```
 
-reads `0 / 0 / 173`.
+read `0 / 0 / 173` at migration 272 and read `0 / 0 / 174` at migration 287. The
+denominator moves as the platform grows, which is exactly why the assertion is
+written as a delta and the monitoring axis publishes its own population. Two
+truncatable, one more table, same zero.
 
 ---
 
@@ -136,11 +140,23 @@ Read `docs/SECURITY_SCAN_INTEGRITY.md` for the axis, the population declaration
 it sits inside, and the `ok: false` refusal ladder that stops the scan reporting
 clean when its own integrity fails.
 
-**Still open:** no control row reads the new axis. `tf_controls_evaluate()` has
-23 controls and none of them consumes `tables_truncatable_by_client` or the
-scan's `integrity_total`. The scan refuses correctly and nothing is listening,
-which is the same shape as the defect migration 269 closed on the control
-consumers. That work is open.
+**Now closed.** Migration 284,
+`controls_listen_to_the_security_scan_refusal_and_its_two_unread_axes`, added
+`CM-TRUNCGRANT-024`, "Privileges outside the RLS-evaluated set are not held by
+client roles", whose status is driven directly by
+`tables_truncatable_by_client`. It reads `passing` when the axis is 0, `failing`
+when it is not, and `attention` when the scan cannot be trusted to answer. The
+same migration added `CM-SCANINTEG-025` over the scan's own `integrity_total`
+plus `stale_exemption_total`, and taught the evaluator to honour the scan's `ok`
+flag, which it had never done because that flag was added after the earlier
+consumer sweep.
+
+Migrations 285 through 287 escalated from the instance to the class.
+`tf_controls_signal_coverage()` compares the scan's declared axis list against
+the catalog definition of `tf_controls_evaluate` and names any axis with no
+consumer, and `CM-SIGNALCOV-026` renders its `gap_total`. That detector would
+have caught this very open item the day migration 283 landed. Read
+`docs/CONTROL_SIGNAL_COVERAGE.md`.
 
 ---
 
@@ -227,5 +243,8 @@ select pg_get_userbyid(defaclrole) as owner, defaclobjtype, defaclacl
 - `docs/SECURITY_SCAN_INTEGRITY.md` — the `tables_truncatable_by_client` axis
   that monitors this hardening, and the population declaration that makes a
   zero-gap report mean something
+- `docs/CONTROL_SIGNAL_COVERAGE.md` — `CM-TRUNCGRANT-024`, the control that reads
+  the axis monitoring this hardening, and the coverage checker that proves no
+  axis goes unread
 - `docs/PLATFORM_KNOWLEDGE_BASE.md` — conventions 27 and 28, house rule 14, and
   the Pass 9 verification log

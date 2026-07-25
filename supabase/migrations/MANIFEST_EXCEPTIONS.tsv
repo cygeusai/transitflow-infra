@@ -1,0 +1,17 @@
+# Transit & Flow - registered manifest fidelity exceptions
+#
+# A repository migration file whose executable text differs from what production
+# actually ran is CODE_DRIFT, and CODE_DRIFT fails the build. This file is the
+# only way to accept one, and accepting one requires naming it, pinning the exact
+# file content it applies to, and writing down why.
+#
+# The pin matters. file_code_checksum is the code checksum of the repository file
+# as it stood when the exception was granted. Edit the file again and the pin no
+# longer matches, the exception stops applying, and the build fails until someone
+# reviews the new content. An exception can never become a standing licence to
+# diverge.
+#
+# Columns: version<TAB>file_code_checksum<TAB>classification<TAB>rationale
+#
+version	file_code_checksum	classification	rationale
+20260725183125	a672d7c47e25e8831c2ea88ad2e1ff8c	REPLAY_REPAIR	The applied text of migration 320 carries the coaleske_placeholder defect: an undefined identifier in the argument list of a raise exception that sits on the failure path of the enforcement_gap_total assertion. The assertion passed, so plpgsql never resolved the identifier and the migration committed clean. This is the defect that produced house rule twenty-three. The immutable history row cannot be corrected, so the repository file carries the repair (coalesce(v_j->>'enforcement_gap_total','<NULL>')) plus a comment block explaining it, so that a replay onto a fresh database raises the intended message rather than 42703 column "coaleske_placeholder" does not exist. Production is unaffected: the branch is unreachable while the assertion holds. See docs/SIGNAL_WIRING_ENFORCEMENT.md and docs/CI_REPOSITORY_FIDELITY.md.

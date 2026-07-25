@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (208 migrations
+The full, ordered migration history of the Transit & Flow backend (215 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -91,6 +91,13 @@ of what exists so nothing is silently dropped.
 | 206 | 20260725011303 | integration_event_status_add_discarded |
 | 207 | 20260725011335 | tf_queue_discard_v2_and_health_v4_terminal_states |
 | 208 | 20260725011834 | tf_scheduler_health_v2_first_seen_grace_and_thresholds |
+| 209 | 20260725011916 | create_studio_prototype_public_bucket |
+| 210 | 20260725012110 | lockdown_studio_prototype_bucket |
+| 211 | 20260725012620 | cygeus_0012_fix_workflow_run_errors |
+| 212 | 20260725012901 | tf_customer_360_and_index |
+| 213 | 20260725013320 | tf_customer_360_defect_fixes |
+| 214 | 20260725013422 | tf_customer_360_estimate_amount_fix |
+| 215 | 20260725013521 | tf_customer_360_supporting_indexes |
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

@@ -58,6 +58,21 @@ error, flips status to `connected`, and closes the ClickUp reauth ticket.
 `tf_system_health` reflects an open ClickUp error as **degraded** (not a false
 green), with detail "worker running, ClickUp API auth issue, rotate token".
 
+## Reusable primitive (generalized)
+
+`tf_integration_health_report(provider, ok, error_code, http_status, message)` is
+the standard self-report / self-heal call for **any** worker:
+- `ok=false` → sets `last_sync_status`, writes a de-duplicated `integration_errors` row.
+- `ok=true` → resolves the open error, sets status `connected`, and closes the
+  matching ClickUp reauth ticket.
+
+`tf_system_health` is uniformly error-aware: QuickBooks, ClickUp, Housecall Pro,
+and messaging (Twilio/OpenPhone) components all degrade when an open
+`reauth_required` error exists for that provider. Verified end-to-end by driving
+Housecall Pro degraded → operational through the primitive.
+
+Drop-in for a worker: `await sb.rpc('tf_integration_health_report', {p_provider:'twilio', p_ok:false, p_error_code:'reauth_required', p_http_status:401})`.
+
 ## Verified
 
 End-to-end tested: a producer call created a real ClickUp task via the worker and

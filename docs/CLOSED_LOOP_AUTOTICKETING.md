@@ -28,6 +28,15 @@ recovery (DB fn)  ->  tf_resolve_ticket -> ops_ticket_close event -> worker post
 - **Integration watchdog** (`tf_integration_watchdog`): opens a ticket when a
   connector error reaches the **escalation tier (>=72h)**; auto-resolves it the
   moment the connector self-heals. Deduped by `integration:<provider>:<code>`.
+  This tier exists for *transient* errors, which often clear themselves and do
+  not deserve a ticket on first sight.
+- **Immediate escalation for auth-class failures**
+  (`tf_integration_health_report`): a credential rejection is deterministic. It
+  never recovers with time, so the 72h tier would leave a dead connector silent
+  for up to three days. A `reauth_required` error therefore opens a priority-2
+  ticket on **first detection**, using the same `integration:<provider>:<code>`
+  dedup key, so the watchdog, the primitive, and the recovery path all address
+  one open ticket and never race each other.
 - **Governance scanner** (`tf_governance_autoticket`, daily cron
   `tf-governance-autoticket-daily` at 14:05 UTC): opens a ticket for any control
   that drops to **failing**; closes it when the control recovers. Deduped by
@@ -99,12 +108,30 @@ connector. Note the Postgres rule that forced two migrations: an enum value may
 be added inside a transaction but not *used* in that same transaction, so the
 `ALTER TYPE` and the `integration_settings` seed ship separately.
 
+### Defect found and fixed by the escalation drill
+
+Driving the new immediate-escalation path surfaced a latent bug in
+`tf_request_ticket`: `p_list` defaults to the Roadmap & Ops list, but an
+*explicit* null argument bypasses the default and violates the `list_id`
+not-null constraint deep inside the insert. Every existing caller happened to
+omit the argument, so the trap was never sprung. `tf_request_ticket` now
+coalesces `p_list` defensively, meaning no caller can break ticket creation by
+passing null. Ticket creation inside the primitive is additionally
+exception-guarded, so a ticketing failure can never swallow the health signal
+that triggered it.
+
 **Verified end to end.** Drove Slack degraded → healthy through the primitive:
 `ok=false` returned `{"action":"recorded"}`, health `reports` flipped to
 `degraded · "Slack API auth issue, rotate slack_bot_token"`, settings read
 `reauth_required` with 1 open error; `ok=true` returned `{"action":"healed"}`,
 settings returned to `connected`, open errors and open tickets to 0, and the
 health component back to `operational · scheduled & connected`.
+
+Escalation drill (2026-07-25): first failure returned a real `ticket_id` with
+priority 2 on list `901418420453`; a second failure returned `ticket_id: null`
+with open tickets still at 1, proving dedup; recovery closed the ticket and the
+error, returning open tickets and open errors to 0. Security scan after the
+change: 0 gaps on all four axes.
 
 ## Verified
 

@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (186 migrations
+The full, ordered migration history of the Transit & Flow backend (190 migrations
 as of 2026-07-25). Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
 of what exists so nothing is silently dropped.
@@ -70,6 +70,10 @@ of what exists so nothing is silently dropped.
 | 184 | 20260725005005 | integration_provider_add_slack |
 | 185 | 20260725005013 | slack_integration_settings_seed |
 | 186 | 20260725005101 | tf_system_health_slack_error_awareness |
+| 187 | 20260725005724 | cygeus_0007_governance_enforcement_and_loop_rpcs |
+| 188 | 20260725010016 | tf_integration_health_report_immediate_ticket |
+| 189 | 20260725010055 | tf_request_ticket_null_safe_list |
+| 190 | 20260725010111 | tf_integration_health_report_immediate_ticket_v2 |
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

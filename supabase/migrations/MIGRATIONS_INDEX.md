@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (309 migrations
+The full, ordered migration history of the Transit & Flow backend (315 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -192,6 +192,57 @@ of what exists so nothing is silently dropped.
 | 307 | 20260725170331 | require_function_declaration_event_trigger |
 | 308 | 20260725170503 | declaration_enforcement_audit_checker |
 | 309 | 20260725170725 | wire_declaration_enforcement_control |
+| 310 | 20260725172759 | deploy_coordination_lock_and_log |
+| 311 | 20260725172901 | tf_deploy_lock_contention_probe |
+| 312 | 20260725173359 | retire_deploy_lock_contention_probe |
+| 313 | 20260725173532 | deploy_coordination_audit_checker |
+| 314 | 20260725174503 | reconcile_ddl_serialize_declaration |
+| 315 | 20260725174600 | deploy_coordination_control_and_roster |
+
+> **Migrations 310 through 315 are one change**, and they close the item that six
+> consecutive verification passes named the largest unmitigated governance risk in
+> this backend: deployment coordination. More than one channel can write DDL to
+> this project, the MCP tools this agent uses, the Supabase dashboard SQL editor,
+> a direct `psql` session, CI, or a second agent. Nothing serialized them and
+> nothing recorded them. The batch does prevention and measurement as two
+> separable things: a `ddl_command_start` event trigger that takes a bounded
+> advisory transaction lock and refuses with `55P03` when another deploy holds it,
+> and a `ddl_command_end` trigger that appends every DDL command to
+> `public.tf_deploy_log` with `clock_timestamp()` so spans have width and overlap
+> is measurable. Control `CM-DEPLOY-029` scores five axes off
+> `tf_deploy_coordination_audit()`, and the interleave axis is computed from
+> recorded spans rather than the trigger catalog, so it is the one axis that can
+> contradict the other four.
+>
+> **Migration 311 is deliberately retained in the history even though 312 retires
+> it.** It is the contention probe, a function whose only purpose was to hold the
+> deploy lock long enough for a second backend to be refused. Deleting it from the
+> chain would delete the evidence that the refusal branch was ever observed rather
+> than merely reasoned about. The proof required an independent backend, and the
+> route to one is itself worth recording: `dblink` is unusable on this project
+> (available but not installed, and `postgres` is not a superuser, so a
+> passwordless loopback connection is impossible), and this agent cannot produce a
+> DDL interleave through MCP at all, because two `execute_sql` calls issued in one
+> tool block are serialized before they reach Postgres. `pg_cron` supplied the
+> second backend, and the verbatim `55P03` refusal with its DETAIL, HINT and
+> CONTEXT lines is transcribed in the document.
+>
+> **Migration 314 is the batch's most valuable accident.** Migration 315's
+> pre-commit assertion caught a drift that migration 310 had introduced fifteen
+> minutes earlier: `tf_ddl_serialize` was declared `write` by analogy with the
+> migration-272 rule, but its body only acquires a lock and raises, so
+> `tf_function_safety_audit` computed `read` and refuted the claim. No migration
+> between 310 and 313 re-scored the register, so the board displayed a stale green
+> over a live drift. The fix went to the declaration, not the detector: teaching
+> the detector that a lock acquisition counts as a write would have made the claim
+> true by weakening the instrument, which convention 21 forbids. That produced
+> **house rule twenty-two**: a migration that writes a row into
+> `tf_function_registry` must re-evaluate the control register before it commits,
+> because a stale green is worse than a red, since nobody investigates a green.
+>
+> The full design, the falsifiability transcript, the checker contract, the
+> `clock_timestamp()` reasoning and the operator runbook are in
+> [`docs/DEPLOY_COORDINATION.md`](../../docs/DEPLOY_COORDINATION.md).
 
 > **Migrations 307 through 309 are one change**, and they convert an obligation
 > from detected to impossible. Convention 33 says creating a `public.tf_*`

@@ -689,13 +689,13 @@ time.
 | 28 | A privilege that no policy can constrain is not covered by the policy layer | privileges outside the RLS-evaluated set (`TRUNCATE`, `TRIGGER`, `REFERENCES`, `MAINTAIN`) are revoked from `anon` and `authenticated` on every table, leaving only the four verbs PostgREST uses; unreachability through the current front door is not a reason to hold a privilege | migration 272, live count of tables `TRUNCATE`-able by a client role is 0 of 174, was 172 of 173; monitored since migration 283 by the `tables_truncatable_by_client` axis of `tf_security_scan`, see `LEAST_PRIVILEGE_TABLE_GRANTS.md` and `SECURITY_SCAN_INTEGRITY.md` |
 | 29 | A checker must publish the population it counted over | every gap count is accompanied by the denominator that produced it, and a checker whose population comes back empty raises rather than returning zero; the declared axis list and the computed axis object are coupled by an assertion so an axis cannot be declared and left out of the total, nor computed and left out of the declaration | `tf_security_scan()` `population` block and empty-population raise since migration 280; `gap_total` derived by iterating `v_axis_order` rather than summing named variables; the same shape already in `tf_grant_tier_audit` and `tf_guard_detection_audit` |
 | 30 | An exemption must suppress something, or it is a trap | a standing exemption over a function that is already guarded hides the finding the day the guard is removed; staleness is detected by the exact inverse of the axis predicate, published as its own count, escalated into `ok: false`, and refused at write time by a validating trigger that also requires a reason long enough to be a review | `tf_security_scan()` `stale_exemptions` and the `stale_exemptions_present` integrity error since migration 280; two live rows retired by migration 281; `tf_security_scan_exemption_validate` since migration 282, proved by three inductions |
-| 31 | Every declared detection axis has a consumer that renders it | detection without consumption is not a control, it is a log line; the axis list a checker publishes is matched against the **catalog definition** of its consumer, not against a register, and any axis nobody renders is a gap that fails a control of its own | `tf_controls_signal_coverage()` since migration 285, read by `CM-SIGNALCOV-026` since migration 287; generalised from one checker to the full roster by migration 304, live `unread_total 0` over **25 declared axes across 11 checkers** since migration 309. The match is the strict counter-read needle of convention 39, which supersedes the earlier single-quoted-name match |
-| 32 | A checker that reports on refusals is not gated on its own refusal flag | every other consumer treats `ok: false` as null per convention 26, but the checker whose job is to notice unheard refusals must run and report regardless, or the failure it exists to surface is the failure that silences it | `tf_controls_signal_coverage()` is deliberately ungated on the checkers it inspects. The single-checker `refusal_flag_honoured` boolean was retired by migration 304 and replaced by `ungated_refusal_total`, which asserts the property across all eleven rostered checkers in either spelling of the gate idiom; live 0 |
-| 33 | Creating a `tf_*` function carries three obligations in the same migration | apply a grant tier, declare the function in `tf_function_registry`, and wire its signal into a control; the first two are now **structurally enforced**, the third is still detected after the fact | tier enforced and asserted since migration 282, detected by `tf_grant_tier_audit` `uncovered_total`; **declaration enforced at `COMMIT` since migration 307** by the `tf_require_function_declaration` event trigger plus the `tf_declaration_pending_deferred_check` constraint trigger, monitored by `tf_declaration_enforcement_audit` and read by `CM-FNDECL-028` since 309, live `enforcement_gap_total 0` over 97 functions and 97 registry rows; signal wiring still only detected, by `tf_controls_signal_coverage` |
+| 31 | Every declared detection axis has a consumer that renders it | detection without consumption is not a control, it is a log line; the axis list a checker publishes is matched against the **catalog definition** of its consumer, not against a register, and any axis nobody renders is a gap that fails a control of its own | `tf_controls_signal_coverage()` since migration 285, read by `CM-SIGNALCOV-026` since migration 287; generalised from one checker to the full roster by migration 304, live `unread_total 0` over **26 declared axes across 12 checkers** since migration 315. The match is the strict counter-read needle of convention 39, which supersedes the earlier single-quoted-name match |
+| 32 | A checker that reports on refusals is not gated on its own refusal flag | every other consumer treats `ok: false` as null per convention 26, but the checker whose job is to notice unheard refusals must run and report regardless, or the failure it exists to surface is the failure that silences it | `tf_controls_signal_coverage()` is deliberately ungated on the checkers it inspects. The single-checker `refusal_flag_honoured` boolean was retired by migration 304 and replaced by `ungated_refusal_total`, which asserts the property across all twelve rostered checkers in either spelling of the gate idiom; live 0 |
+| 33 | Creating a `tf_*` function carries three obligations in the same migration | apply a grant tier, declare the function in `tf_function_registry`, and wire its signal into a control; the first two are now **structurally enforced**, the third is still detected after the fact | tier enforced and asserted since migration 282, detected by `tf_grant_tier_audit` `uncovered_total`; **declaration enforced at `COMMIT` since migration 307** by the `tf_require_function_declaration` event trigger plus the `tf_declaration_pending_deferred_check` constraint trigger, monitored by `tf_declaration_enforcement_audit` and read by `CM-FNDECL-028` since 309, live `enforcement_gap_total 0` over 100 functions and 100 registry rows; signal wiring still only detected, by `tf_controls_signal_coverage` |
 | 34 | A stored status is a cache, so publish its age beside it against a stated threshold | a register of judgements with no date on it renders an evaluation from any point in the past as current; the age, the threshold and the cadence that produced the threshold are all published so the freshness claim is falsifiable rather than asserted | `tf_controls_board()` `board_age_hours` / `threshold_hours` / `cadence` since migration 288; threshold 792 hours, the `0 14 1 * *` monthly cadence plus a two-day grace; read by `CM-BOARDFRESH-027` since migration 290 |
 | 35 | A control's status branch must compute a status, never assert one | a branch that reads `then 'passing'` survives every failure it exists to detect; the property worth checking was never whether a branch exists but whether it decides anything, so the register is measured on both axes, controls with no branch at all and controls whose branch asserts a literal | `tf_controls_board()` `unscored_total` since migration 288 and `tautological_total` since migration 289, both parsed out of `pg_get_functiondef` of the evaluator; found `GV-CCM-016` hardcoded to `'passing'` on its first run, fixed in migration 290; live 0 and 0 |
 | 36 | A signal must not be produced by the act of evaluating it | a freshness reading taken after the write it measures is always zero, so the prior state is read and held before anything is stamped, and the evidence string states the ordering so a reader can verify it without the source | `tf_controls_evaluate` calls `tf_controls_board()` in its opening statements since migration 290 and the `CM-BOARDFRESH-027` evidence ends *"Age is measured before this run stamps the board"* |
-| 37 | An axis is the consumption surface, and a checker declares its own | an axis is a signal a control is expected to READ, not an inventory of everything the checker counts; only the checker knows which of its numbers are findings and which are population or complement, so the checker declares and the detector verifies, because an inspecting detector that cannot tell a finding from a denominator demands consumers for numbers no control should read and the platform grows fake controls to satisfy it | all eleven rostered checkers publish `axes` since migrations 291 through 303 and 308; every non-axis counter is mapped to a written rationale in `non_gating`; live 25 axes across 11 checkers |
+| 37 | An axis is the consumption surface, and a checker declares its own | an axis is a signal a control is expected to READ, not an inventory of everything the checker counts; only the checker knows which of its numbers are findings and which are population or complement, so the checker declares and the detector verifies, because an inspecting detector that cannot tell a finding from a denominator demands consumers for numbers no control should read and the platform grows fake controls to satisfy it | all twelve rostered checkers publish `axes` since migrations 291 through 303, 308 and 313; every non-axis counter is mapped to a written rationale in `non_gating`; live 26 axes across 12 checkers |
 | 38 | Every published counter is classified, and classification recognises every naming convention | a checker's tail asserts that each declared axis appears in the payload, that each non-gating key carries a rationale, and that **every** counter key is one of axis, component axis, or explained non-gating, so nothing ships unclassified; the sweep matches `_total`, `_count` and `_issues`, because a classification rule that only recognises one naming convention does not classify, it filters | the three couplings in every declaring checker since migration 291; migration 295 found the `_total`-only sweep passing `drift_count` while examining zero keys, which is an assertion that can never fail |
 | 39 | A consumer read is proved by the strict counter-read needle | `coalesce((<evaluator variable>->>'<axis>')::int` is the only form that proves consumption, because the variable qualifier defeats axis names published by more than one checker and the `coalesce(...)::int` shape defeats a signal that appears only inside a human-readable evidence string; a bare `strpos` over a function definition proves neither | `tf_controls_signal_coverage` since migration 304, verified live across all 25 (checker, axis) pairs. Supersedes the single-quoted-name match of convention 31. The collision case is real: `drift_total` is published by both `tf_grant_tier_audit` and `tf_function_safety_audit` |
 | 40 | A roll-up may stand in for its primitives only if the checker asserts the identity | a checker may declare one roll-up axis instead of five primitives, which makes the consuming control simpler to reason about, but only if it asserts in its own body that the roll-up equals the sum of the primitives it stands for; without that assertion a roll-up is where findings disappear, because adding a sixth primitive and forgetting the sum leaves the number at zero while the blind spot grows | `tf_grant_tier_audit` `violation_total` and `tf_controls_signal_coverage` `gap_total` since migration 292 and 304; both publish their primitives as `component_axes` and assert the identity before returning |
@@ -1334,7 +1334,44 @@ because the first cannot be enforced against an agent that has SQL access.
 
 ## The house rules
 
-Twenty-one rules, each of which exists because breaking it cost real time.
+Twenty-two rules, each of which exists because breaking it cost real time.
+
+**Twenty-two. A migration that writes a row into `tf_function_registry` must
+re-evaluate the control register before it commits.** Found in migration 315,
+when an assertion caught a drift that migration 310 had introduced fifteen minutes
+earlier and that no migration since had surfaced.
+
+A declaration is a claim, not a fact. `tf_function_registry.declared_kind` is
+written by a human or an agent, and `tf_function_safety_audit` computes the same
+property from the function body. When the two disagree the audit publishes drift
+and `CM-FNDRIFT-018` renders it. That machinery worked exactly as designed here.
+What failed was the interval.
+
+Migration 310 declared `tf_ddl_serialize` as `write`, applying the migration-272
+rule by analogy: the function is part of a serialization mechanism, therefore it
+must write. Its body does not write. It acquires an advisory lock and raises, so
+the audit computed `read` and refuted the claim. Migrations 311 through 313 all
+committed cleanly on top of that, because none of them re-scored the register.
+The board displayed **26 passing, 0 failing** the entire time, over a live
+`drift_total 1`. The number on the board was not wrong when it was written. It was
+wrong when it was read, which is worse, because a reader has no way to tell.
+
+House rule seventeen already required a migration that touches the register to
+assert the register's aggregate state. This rule extends the same obligation to
+migrations that touch the register's *inputs*. A registry write is a register
+write with a delay.
+
+> **A stale green is worse than a red, because nobody investigates a green.**
+
+The second half of this rule is where the fix goes. The drift was real, so there
+were two ways to make it disappear: change the declaration, or teach
+`tf_function_safety_audit` that acquiring a lock counts as a write. The second
+would have been faster, would have made the original claim true, and would have
+been the wrong fix, because it makes the claim true by weakening the instrument
+that tests claims. Convention 21 says decompose, never narrow. The declaration
+changed to `read`, and the rationale in the registry row now records that the
+function's write effect is on lock state rather than on rows, which is a fact
+about the mechanism rather than an exception to the detector.
 
 **Twenty-one. When a rule cannot be enforced by ordering, stop trying to order it
 and enforce the outcome at `COMMIT`.** Found in migration 307, while trying to
@@ -2024,14 +2061,14 @@ from public.auto_tickets order by created_at;
 
 ### GRC controls
 
-**28 controls, 25 `passing`, 3 `attention`, 0 `failing`** as of migration 309.
+**29 controls, 26 `passing`, 3 `attention`, 0 `failing`** as of migration 315.
 The three in `attention` are `AC-PRIV-002` (one intentionally anon-exposed
 definer function, carrying a live exemption row that suppresses a real finding),
 `AC-MFA-003` and `DP-PITR-007`, the latter two being owner actions 3 and 4 above.
 Evaluated monthly by `tf-controls-evaluate-monthly`, and on demand by
 `tf_controls_evaluate()`, which is a writer and takes no arguments.
 
-Six of the 27 are manual and **none of the six has ever been attested**. That is
+Six of the 29 are manual and **none of the six has ever been attested**. That is
 counted rather than assumed, and it is an owner action, not an engineering one.
 
 Before reading any status on this board, read the board itself:
@@ -2053,7 +2090,19 @@ evaluator stamps every automated row from one `UPDATE` sharing one `v_now` and
 its status CASE ends `else status end`, so an unscored row is stamped as fresh as
 a scored one and `count(distinct last_evaluated_at)` reads 1.
 
-The most recently added, by migration 290, is `CM-BOARDFRESH-027`, owned by
+The most recently added, by migration 315, is `CM-DEPLOY-029`, owned by `CISO`,
+automated, reading `tf_deploy_coordination_audit` `coordination_gap_total`. It
+certifies that concurrent schema deployments are serialized by the
+`tf_serialize_deploy_ddl` advisory-lock trigger and that every DDL command is
+recorded by the `tf_deploy_ddl_log` trigger into `tf_deploy_log`. Four of its five
+axes are catalog facts, both triggers present and both enabled. The fifth,
+`interleaved_deploy_total`, is computed from recorded command spans, which makes
+it the only axis that can contradict the other four: the triggers can be correctly
+installed today and the log can still show two deploys overlapped yesterday. Live
+0 interleaved pairs across 12 DDL transactions on 12 backends and 41 logged
+commands. See [`DEPLOY_COORDINATION.md`](./DEPLOY_COORDINATION.md).
+
+Before that, by migration 290, `CM-BOARDFRESH-027`, owned by
 `CISO`, automated, reading `tf_controls_board` `authoritative`. The same
 migration fixed `GV-CCM-016`, which had been hardcoded to `'passing'` since it
 was written: the control certifying continuous controls monitoring was the one
@@ -2074,13 +2123,13 @@ The three before that are the signal-consumption tier, all owned by
   consumer that renders it. Reads `tf_controls_signal_coverage` `gap_total`,
   which since migration 304 is a roll-up of five primitives: unread axes,
   undeclared checkers, unmeasured checkers, unrostered callees and
-  refusal-ungated checkers. Live 0 over **25 axes across 11 checkers**, up from
+  refusal-ungated checkers. Live 0 over **26 axes across 12 checkers**, up from
   6 axes across 1 checker before migration 291.
 - `CM-FNDECL-028` — creating a `tf_*` function without declaring it is
   impossible, not merely detectable. Reads `tf_declaration_enforcement_audit`
   `enforcement_gap_total`, a roll-up of four primitives: enforcement missing,
   enforcement disabled, pending-queue residue and unregistered functions. Live 0
-  over 97 functions and 97 registry rows, with the event trigger in `origin`
+  over 100 functions and 100 registry rows, with the event trigger in `origin`
   state. Added by migration 309.
 
 The structural change in that batch matters more than the three rows.
@@ -2322,6 +2371,12 @@ subject-specific notes beside it in `docs/`:
 - `FUNCTION_SAFETY_AUDIT.md` — the signal-pattern table, `CM-FNDRIFT-018`, the null-that-is-not-false defect closed by migration 268, the unheard refusal channel closed by migration 269, and the written reason `misleading_total` is published but does not gate
 - `REGISTER_INTEGRITY.md` — **the checker that seeded its own oracle.** The trigger-function classifier blind spot closed by migration 275, the seeded-register finding it surfaced, the mis-keyed register row the concurrent agent wrote, the catalog-validating triggers migration 276 attached to both registers, the four inductions that prove each refusal fires for the right reason, and the savepoint-probe technique
 - `LEAST_PRIVILEGE_TABLE_GRANTS.md` — **the privilege RLS does not gate.** Why `TRUNCATE` cannot be constrained by any policy, the 172-of-173 exposure closed by migration 272, the `TRIGGER` / `REFERENCES` / `MAINTAIN` companions, the `supabase_admin` default-ACL residual, the missing scanner axis, and the evidence the hardening held under a later concurrent deploy
+- `SECURITY_SCAN_INTEGRITY.md` — why a scan must vouch for its own population, the undeclared denominator, the exemption-that-suppresses-nothing rule, `CM-SCANINTEG-025`
+- `CONTROL_SIGNAL_COVERAGE.md` — the three obligations of creating a `tf_*` function, house rule seventeen, the five refusal primitives of `tf_controls_signal_coverage`, `CM-SIGNALCOV-026`
+- `CONTROL_BOARD_FRESHNESS.md` — why `it_controls.status` is a cache, why `last_evaluated_at` cannot measure its age, the unscored and tautological axes, house rule eighteen, `CM-BOARDFRESH-027`
+- `CHECKER_AXIS_DECLARATION.md` — the checker roster, the three couplings, the strict counter-read needle, house rules nineteen and twenty, and why a checker declares its own axes rather than a detector inferring them
+- `DECLARATION_ENFORCEMENT.md` — **the first control that certifies an impossibility.** The discarded statement-level design and the catalog fact that disproved it, the enqueue-plus-deferred-constraint mechanism, house rule twenty-one, the monitored kill switch, `CM-FNDECL-028`
+- `DEPLOY_COORDINATION.md` — **the risk six passes named and this one closed.** The advisory-lock refusal trigger, the deploy log and why it stamps `clock_timestamp()` rather than `now()`, the MCP serialization finding, the `pg_cron` backend that made the refusal provable, the axis that can contradict the other four, house rule twenty-two, `CM-DEPLOY-029`
 - `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`, 258 through 264 with theirs in `FUNCTION_GRANT_TIERS.md`, 265 through 267 with theirs back in `GUARD_DETECTION.md`, 268 through 269 with theirs in `FUNCTION_SAFETY_AUDIT.md`, and 270 through 277 with theirs split across `LEAST_PRIVILEGE_TABLE_GRANTS.md` and `REGISTER_INTEGRITY.md` plus the concurrent-deployment note at the head of the index
 
 Notion carries the same material for non-engineers under **🧭 Operations Hub —
@@ -3141,6 +3196,90 @@ been carried without progress longer than obligation two was, and obligation two
 took three migrations to close. **Recommendation stands and should be executed
 next unless something louder arrives: advisory lock, deploy log, `CM-DEPLOY`
 control.**
+
+**Pass 15, 2026-07-25, at migration 315.** Six consecutive passes named
+deployment coordination the largest unmitigated governance risk in this backend
+and recommended the same three things. Pass 15 built them. Six migrations, 310
+through 315. The register moved from 28 controls to **29: 26 passing, 3 attention,
+0 failing**, and `CM-DEPLOY-029` is the first control on this board whose gating
+signal is computed from a **recorded history** rather than from present catalog
+state.
+
+| Claim carried into this pass | What the catalog said | Resolution |
+| --- | --- | --- |
+| The risk is that two agents interleave DDL | the risk is wider and the narrow framing was hiding half of it. Five channels can write DDL to this project: these MCP tools, the Supabase dashboard SQL editor, a direct `psql` session, CI, and a second agent. None was serialized, and, worse, none was recorded | prevention and measurement were built as two separable triggers rather than one. `tf_serialize_deploy_ddl` on `ddl_command_start` refuses; `tf_deploy_ddl_log` on `ddl_command_end` records. An interleave that corrupted state would previously have left nothing to reconstruct from |
+| An interleave can be induced by issuing two DDL statements in one tool block | it cannot, and the measurement says so precisely. The lock holder held from `17:30:15.913915` to `17:30:45.942967`; the "concurrent" statement landed at `17:30:46.582`, **0.64 s after release**, with `inside_holder_window = false`. The MCP channel serializes calls before they reach Postgres | this agent structurally cannot falsify its own lock through its own tools. That is a property of the harness, not of the guard, and it is why the proof needed a backend this agent does not own |
+| `dblink` will supply the second backend | it will not. `dblink` appears in `pg_available_extensions` and not in `pg_extension`, and `postgres` has `rolsuper = false`, so a passwordless loopback connection is impossible | `pg_cron` supplied it. `cron.schedule('tf-deploy-lock-probe', '30 seconds', ...)` produced a genuine second backend with `application_name = 'pg_cron'`, and the `55P03` refusal was captured verbatim with its DETAIL, HINT and CONTEXT lines |
+| Timestamp the deploy log with `now()` like every other table | `now()` is transaction-fixed. Every command in one migration would carry an identical stamp, every span would have zero width, and no two spans could ever overlap | `clock_timestamp()`. Had this shipped as `now()`, `interleaved_deploy_total` would have read 0 for **every possible input**, which is house rule twenty in a new costume: a checker that cannot fail, publishing the output of a healthy system |
+| The migration that installs the logger will demonstrate the logger | attempt 1 failed on exactly this: the `COMMENT` intended as the probe ran **before** the event triggers existed, so it logged nothing and the self-check refused | the `COMMENT` moved to the end. `ddl_command_end` fires for `COMMENT`, which makes a trailing comment the cheapest possible self-proving probe, and the migration that installs a logger now proves the logger inside itself |
+| The register was green before this batch, so a new control can be wired against a clean baseline | it was not green. The baseline guard read **stored** statuses, which had not been re-scored since migration 309, and `tf_controls_evaluate()` immediately surfaced `CM-FNDRIFT-018 => failing :: 1 unreconciled register entr(ies)` | migration 310 had declared `tf_ddl_serialize` as `write` when its body only takes a lock and raises. The control wiring was split out to 315 and 314 reconciled the declaration first. **House rule twenty-two** |
+| The drift can be resolved by teaching the audit that a lock acquisition is a write | it can, and that is the trap. The declaration would become true and the detector would become weaker, and every future function whose only effect is a lock would be silently reclassified | convention 21, decompose never narrow. The declaration changed, the detector did not. The registry rationale now records that the write effect is on lock state, which is a fact about the mechanism rather than an exemption from the instrument |
+
+| Verified at the start of this pass | Verified at the end | What was re-read |
+| --- | --- | --- |
+| Migrations 309, conventions 43, house rules 21, controls 28, checkers 11, axes 25 | 315 / 43 / 22 / 29 / 12 / 26 | inventory, conventions register, house rules, defect-pattern library, open register, `IT_GOVERNANCE_GRC.md`, `DECLARATION_ENFORCEMENT.md`, `CHECKER_AXIS_DECLARATION.md`, `CONTROL_SIGNAL_COVERAGE.md`, `MIGRATIONS_INDEX.md`, and a new `DEPLOY_COORDINATION.md` |
+
+Live state at 17:47Z, every figure read back out of the database rather than
+inferred from the migration assertions. `tf_controls_evaluate()`: 29 controls,
+26 passing, **0 failing**, 3 attention, 23 automated, 6 manual and all 6 never
+attested. `tf_controls_signal_coverage()`: `ok true`, `gap_total 0`,
+`checkers_total 12`, `declaring_checker_total 12`, `axes_total 26`, all five
+primitives 0 and all five offender arrays empty. `tf_controls_board()`: `ok true`,
+`authoritative true`, `unscored_total 0`, `tautological_total 0`,
+`board_age_hours 0.00`. `tf_security_scan()`: `ok true`, `integrity_total 0`,
+`unguarded 0`, `rls_enabled_no_policy 2`, `rls_enabled_no_policy_reachable 0`.
+`tf_function_safety_audit()`: `drift_total 0`, `undeclared_total 0`,
+`gap_total 0`.
+
+Live evidence string, quoted because it is the audit artifact. `CM-DEPLOY-029`
+reads *"passing :: lock trigger tf_serialize_deploy_ddl is origin and log trigger
+tf_deploy_ddl_log is origin; 0 interleaved deploy pair(s) [] across a population
+of 12 DDL transaction(s) on 12 backend(s), 41 logged command(s) since
+2026-07-25T17:27:59.960192+00:00. The interleave axis is measured from recorded
+command spans, not from the trigger catalog, so it is the axis that can contradict
+the other four"*.
+
+Three results from this pass are worth carrying forward.
+
+The first is that **a control's most valuable axis is the one that can contradict
+the rest of it**. Four of `CM-DEPLOY-029`'s five axes read the catalog and answer
+"is the mechanism installed". The fifth reads the log and answers "did it work".
+A control built only from the first kind certifies its own installation, which is
+the seeded-register defect of migration 276 wearing different clothes. Every
+checker on this roster should be asked which of its axes could return a finding on
+a day when everything it inspects is correctly configured. If the answer is none,
+the checker is an inventory.
+
+The second is that **the harness is part of the threat model, in both directions**.
+This agent cannot interleave DDL through MCP, which sounds reassuring and is
+actually the problem: it meant the guard could not be falsified from inside, and
+an unfalsifiable guard is indistinguishable from a guard that refuses nothing.
+Finding a backend outside the harness, `pg_cron`, was the whole proof. The general
+form is that when a tool cannot produce the failure a control detects, the
+control's evidence is untested until something outside the tool produces it.
+
+The third is that **a green board has an age, and the age is the finding**. House
+rule seventeen made migrations that touch the register assert its aggregate state.
+This pass showed the same hole one level upstream: migrations 310 through 313
+touched the register's *inputs* and left the cached statuses untouched, so the
+board read clean over a live drift for fifteen minutes and four migrations. The
+correct reflex is that anything which could change what a checker computes must
+re-run the checker before it commits. That is house rule twenty-two, and the
+sentence to remember is that a stale green is worse than a red, because nobody
+investigates a green.
+
+The sweep resumes at **obligation three of convention 33**, unchanged from Pass 14
+and now the oldest structural gap in the chain by a clear margin: a migration can
+create a checker and never wire its signal into a control. The design difficulty
+is unchanged, that "wire its signal into a control" has no single catalog fact
+testable at `COMMIT` and self-declared intent would be an exemption lever of the
+kind migration 265 spent a batch closing. Behind that, the `supabase_admin`
+default-ACL residual, whose symptom migration 283 monitors and whose mechanism is
+untouched. Behind that, and new to this list, `tf_deploy_log` has **no retention
+policy**: it grows unbounded, one row per DDL command, and the overlap query is
+O(n^2) in the window it scans. Neither matters at 41 rows. Both matter at a
+million. The deployment-coordination item that headed this list for six passes is
+closed.
 
 ---
 

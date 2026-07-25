@@ -18,8 +18,9 @@ declared axes, zero unread, zero undeclared, zero unmeasured, zero unrostered
 callees, zero refusal-ungated checkers.
 
 > **Roster since this batch.** Migration 309 added
-> `tf_declaration_enforcement_audit` as the eleventh checker, taking the live
-> figures to **eleven checkers and twenty-five axes**, still zero unread. The
+> `tf_declaration_enforcement_audit` as the eleventh checker, and migration 315
+> added `tf_deploy_coordination_audit` as the twelfth, taking the live figures to
+> **twelve checkers and twenty-six axes**, still zero unread. The
 > ten-and-twenty-four numbers throughout this document are the state at the close
 > of migration 306, which is what the reasoning below was worked out against. For
 > current figures read the checker, not this file. See
@@ -414,7 +415,8 @@ control register asserted the register's aggregate state before it committed:
 
 **306 migrations applied. 27 controls: 24 passing, 3 attention, 0 failing.**
 (Migrations 307 through 309 subsequently took this to **28 controls: 25 passing,
-3 attention, 0 failing**.)
+3 attention, 0 failing**, and migrations 310 through 315 to **29 controls: 26
+passing, 3 attention, 0 failing**.)
 
 The three attention controls are `AC-MFA-003`, `AC-PRIV-002` and `DP-PITR-007`. All
 three are owner actions outside the database, tracked in ClickUp, and none are

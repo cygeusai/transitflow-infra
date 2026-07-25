@@ -493,8 +493,9 @@ those declarations against the evaluator across the whole roster. Coverage went
 from one checker with six axes to **ten checkers with twenty-four axes**, and the
 control now publishes its own denominator so a reader can tell ten-of-ten from
 one-of-one. Migration 309 later added an eleventh checker,
-`tf_declaration_enforcement_audit`, taking the live roster to eleven checkers and
-twenty-five axes.
+`tf_declaration_enforcement_audit`, and migration 315 a twelfth,
+`tf_deploy_coordination_audit`, taking the live roster to **twelve checkers and
+twenty-six axes**, still zero unread.
 
 **Why declaration beats inspection.** Inspection cannot distinguish a **finding**
 from a **population**. `tf_automation_out_of_band` publishes `enabled_total`, the

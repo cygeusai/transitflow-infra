@@ -7,11 +7,13 @@ Transit & Flow, mapped to **NIST CSF**, **SOC 2**, and **CIS Controls v8**.
 
 | Object | Purpose |
 |--------|---------|
-| `it_controls` | Controls register (**28 controls** as of migration 309) with framework mapping, owner, status, evidence. Keyed by `control_key`, unique |
+| `it_controls` | Controls register (**29 controls** as of migration 315) with framework mapping, owner, status, evidence. Keyed by `control_key`, unique |
 | `tf_controls_evaluate()` | Re-scores automated controls from live signals (security scan, grant-tier audit, function-safety audit, guard-detection audit, signal coverage, board freshness, declaration enforcement, cron presence, MFA gaps, data-quality). Takes **no arguments** |
-| `tf_controls_signal_coverage()` | Verifies, for a declared roster of eleven checkers, that each one declares its axes, that every declared axis is read by `tf_controls_evaluate` via the strict counter-read needle, that every `tf_*` callee of the evaluator is on the roster, and that every checker's refusal flag is honoured. Added migration 285 over one checker, generalised to the full roster by migration 304, read by `CM-SIGNALCOV-026` since 287 |
+| `tf_controls_signal_coverage()` | Verifies, for a declared roster of twelve checkers, that each one declares its axes, that every declared axis is read by `tf_controls_evaluate` via the strict counter-read needle, that every `tf_*` callee of the evaluator is on the roster, and that every checker's refusal flag is honoured. Added migration 285 over one checker, generalised to the full roster by migration 304, read by `CM-SIGNALCOV-026` since 287 |
 | `tf_controls_board()` | Publishes the age of the register, names every automated control the evaluator has no status branch for, and names every branch that asserts a status literal instead of computing one. Folds all three into `authoritative`. Added migration 288, extended 289, read by `CM-BOARDFRESH-027` since 290 |
 | `tf_declaration_enforcement_audit()` | Reports whether the `tf_require_function_declaration` event trigger exists and is enabled, whether the pending queue holds residue, and whether any `public.tf_*` function lacks a `tf_function_registry` row. Folds all four into `enforcement_gap_total`. Added migration 308, read by `CM-FNDECL-028` since 309 |
+| `tf_deploy_coordination_audit()` | Reports whether the `tf_serialize_deploy_ddl` lock trigger and the `tf_deploy_ddl_log` logging trigger both exist and are enabled, and counts DDL transactions whose recorded command spans overlap another transaction's. Folds the four catalog axes into `coordination_gap_total` and publishes `interleaved_deploy_total` separately. Added migration 313, read by `CM-DEPLOY-029` since 315 |
+| `tf_deploy_log` | Append-only record of every DDL command executed against this project: transaction id, backend pid, application name, command tag, object identity, and a `clock_timestamp()` stamp so spans have width. Written by the `tf_deploy_ddl_log` event trigger. Staff-readable under RLS |
 | `tf_declaration_pending` | Transient queue. Holds a row only between the creation of an undeclared `public.tf_*` function and the commit of the transaction that created it. Empty outside a transaction by construction |
 | `access_reviews` | Access certification snapshots with findings |
 | `tf_access_review()` | Snapshots accounts/roles/MFA/last-sign-in; flags MFA gaps, stale, terminated-active, SoD |
@@ -32,17 +34,21 @@ Transit & Flow, mapped to **NIST CSF**, **SOC 2**, and **CIS Controls v8**.
 All GRC tables enforce RLS (internal-staff read; writes via SECURITY DEFINER
 functions / service_role). All GRC functions are SECURITY DEFINER with pinned
 `search_path` and are executable only by `service_role` (no anon, no
-authenticated), except `tf_controls_signal_coverage()`, `tf_controls_board()` and
-`tf_declaration_enforcement_audit()`, which are `staff` tier and each carry the
-`user_is_internal_staff` predicate in the function body as that tier requires.
+authenticated), except `tf_controls_signal_coverage()`, `tf_controls_board()`,
+`tf_declaration_enforcement_audit()` and `tf_deploy_coordination_audit()`, which
+are `staff` tier and each carry the `user_is_internal_staff` predicate in the
+function body as that tier requires.
 
 Post-deploy `tf_security_scan()` reads `ok: true`, `integrity_total: 0`,
-`gap_total: 3` over a declared population of 175 tables and 123 definer
+`gap_total: 3` over a declared population of 176 tables and 126 definer
 functions. The three are `anon_secdef_nonpublic: 1`, an intentional public surface
 with a live exemption row, and `rls_enabled_no_policy: 2`, which is
 `studio_events_prelaunch_archive` and `tf_declaration_pending`. Both tables have
 RLS on, zero policies, and an ACL with no client-role grants at all, so no client
-role can reach either. The decomposed axis `rls_enabled_no_policy_reachable` reads
+role can reach either. `tf_deploy_log`, added by migration 310, is deliberately
+not a third: it was given `tf_deploy_log_staff_read` in the same migration that
+created it, because `ensure_rls` enables RLS on every new table and a new table
+with no policy is a new finding. The decomposed axis `rls_enabled_no_policy_reachable` reads
 **0**, and that is the number `AC-RLS-001` weighs. Both numbers stay in the
 control's evidence so the correction is auditable rather than silent.
 
@@ -53,16 +59,16 @@ exemption. A standing exemption over a table no role can reach suppresses nothin
 today and hides the finding on the day somebody grants it to `authenticated`,
 which is the retired-exemption rule from migration 282.
 
-## Current posture (2026-07-25, after migration 309)
+## Current posture (2026-07-25, after migration 315)
 
 `tf_controls_evaluate()` reads:
 
 ```json
-{"total": 28, "manual": 0, "failing": 0, "passing": 25, "attention": 3,
- "automated": 22, "manual_controls": 6, "manual_never_attested": 6}
+{"total": 29, "manual": 0, "failing": 0, "passing": 26, "attention": 3,
+ "automated": 23, "manual_controls": 6, "manual_never_attested": 6}
 ```
 
-25 of 28 passing, **0 failing**, 3 in attention:
+26 of 29 passing, **0 failing**, 3 in attention:
 
 - `AC-PRIV-002` — 1 anon-exposed definer function, 0 without a pinned
   `search_path`. The exposed function is an intentional public surface carrying a
@@ -84,7 +90,7 @@ it.
 |-----|---------|--------|--------|
 | `CM-TRUNCGRANT-024` | Privileges outside the RLS-evaluated set are not held by client roles | `tf_security_scan` `tables_truncatable_by_client` | passing |
 | `CM-SCANINTEG-025` | The security scan vouches for its own population and its refusals are heard | `tf_security_scan` `integrity_total` + `stale_exemption_total` | passing |
-| `CM-SIGNALCOV-026` | Every declared detection axis on the checker roster has a consumer that renders it | `tf_controls_signal_coverage` `gap_total` over an eleven-checker roster | passing |
+| `CM-SIGNALCOV-026` | Every declared detection axis on the checker roster has a consumer that renders it | `tf_controls_signal_coverage` `gap_total` over a twelve-checker roster | passing |
 
 All three are `automated`, owned by the `CISO` role, and mapped across SOC 2,
 CIS v8 and NIST CSF. The framework mappings are stored on the row, not in this
@@ -162,8 +168,8 @@ close of that batch. What changed is what one of those rows is capable of
 asserting.
 
 `CM-SIGNALCOV-026` used to certify that six declared axes on one checker were
-read. It now certifies four properties across the whole roster, **eleven checkers
-and twenty-five axes** after migration 309 extended it: that every rostered
+read. It now certifies four properties across the whole roster, **twelve checkers
+and twenty-six axes** after migrations 309 and 315 extended it: that every rostered
 checker declares its axes, that every declared axis is read by the evaluator into
 an actual comparison, that every `tf_*` function the evaluator calls is on the
 roster or on an explicit non-checker list, and that every checker's refusal flag
@@ -250,6 +256,51 @@ Read [`DECLARATION_ENFORCEMENT.md`](./DECLARATION_ENFORCEMENT.md) for the
 discarded design, the queue-plus-deferred-trigger mechanism, the verbatim refusal
 transcripts from all three probes, and the operator runbook.
 
+## Controls added by migrations 310 through 315
+
+| Key | Control | Signal | Status |
+|-----|---------|--------|--------|
+| `CM-DEPLOY-029` | Concurrent schema deployments are serialized and every DDL command is recorded | `tf_deploy_coordination_audit` `coordination_gap_total` | passing |
+
+This closes the item six consecutive verification passes named as the largest
+unmitigated governance risk in the backend. The risk was never that this agent
+would collide with itself. It was that **more than one channel can write DDL to
+this project**, the MCP tools, the Supabase dashboard SQL editor, a direct `psql`
+session, CI, or a second agent, and nothing serialized them, and, worse, nothing
+recorded them. An interleaved deploy that corrupted state would have left no
+trace to reconstruct from.
+
+The batch treats prevention and measurement as two separable things, because they
+fail differently. Prevention is a `ddl_command_start` event trigger,
+`tf_serialize_deploy_ddl`, which takes a bounded advisory transaction lock and
+raises `55P03` naming the holding backend when another deploy has it. It is an
+event trigger rather than a convention because a convention that says "take the
+lock first" is exactly the control that is not there when someone is in a hurry.
+The lock is re-entrant within a transaction, so there is no unlock to forget.
+Measurement is a `ddl_command_end` trigger, `tf_deploy_ddl_log`, appending every
+command to `tf_deploy_log` with `clock_timestamp()` rather than `now()`, because
+`now()` is transaction-fixed and would collapse every deploy to a single point,
+making overlap unmeasurable and the control clean for every possible input.
+
+The control scores five axes. Four are catalog facts, both triggers present and
+both enabled. The fifth, `interleaved_deploy_total`, is computed from recorded
+command spans, so it is the one axis that can contradict the other four: the
+triggers can be perfectly installed today and the log can still show that two
+deploys overlapped yesterday.
+
+The refusal branch was proved, not assumed, and proving it was the hard part.
+This agent **cannot produce a DDL interleave through MCP**, because two
+`execute_sql` calls issued in one tool block are serialized before they reach
+Postgres, measured at 0.64 s after lock release rather than inside the holder
+window. `dblink` is unusable here. `pg_cron` supplied the independent backend,
+and the verbatim `55P03` with its DETAIL, HINT and CONTEXT lines is transcribed
+in the document.
+
+Read [`DEPLOY_COORDINATION.md`](./DEPLOY_COORDINATION.md) for the full design,
+the falsifiability transcript, the checker contract, the `clock_timestamp()`
+reasoning, house rule twenty-two, and the operator runbook including the
+monitored emergency bypass.
+
 ## Runbook
 
 **Score the board.**
@@ -268,12 +319,12 @@ Expect `ok: true` and `gap_total: 0`, with all five primitives at zero:
 `unread_total`, `undeclared_checker_total`, `unmeasured_checker_total`,
 `unrostered_callee_total` and `ungated_refusal_total`. Each names its offenders in
 a matching array: `unread_axes`, `undeclared_checkers`, `unmeasured_checkers`,
-`unrostered_callees`, `ungated_checkers`. Also expect `checkers_total: 11`,
-`declaring_checker_total: 11` and `axes_total: 25`, which are the denominators.
+`unrostered_callees`, `ungated_checkers`. Also expect `checkers_total: 12`,
+`declaring_checker_total: 12` and `axes_total: 26`, which are the denominators.
 A `checkers_total` that has moved without a migration explaining it is itself the
 finding. The `refusal_flag_honoured` boolean was retired in migration 304 and
 replaced by `ungated_refusal_total`, which asserts the same property across all
-eleven checkers rather than one.
+twelve checkers rather than one.
 
 **Prove declaring a new function is not optional.**
 
@@ -299,8 +350,8 @@ Expect `ok: true`, `authoritative: true`, `unscored_total: 0`,
 `tautological_total: 0`, and `board_age_hours` well under `threshold_hours`
 (792). A non-zero `unscored_total` names the controls in `unscored_controls`, a
 non-zero `tautological_total` names them in `tautological_controls`, and either
-one drops `authoritative` to false. `controls_total` reads 28 and
-`automated_total` reads 22.
+one drops `authoritative` to false. `controls_total` reads 29 and
+`automated_total` reads 23.
 
 Run this **before** `tf_controls_evaluate()` if you want a true age reading. Run
 after, and the age you read is the age of your own run.

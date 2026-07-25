@@ -238,7 +238,8 @@ wrong place. It aborts the migration.
 
 Register: **27 controls, 24 passing, 3 attention, 0 failing.** (Migrations 307
 through 309 subsequently took this to **28 controls, 25 passing, 3 attention, 0
-failing**, with `automated_total` at 22.)
+failing**, with `automated_total` at 22, and migrations 310 through 315 to **29
+controls, 26 passing, 3 attention, 0 failing**, with `automated_total` at 23.)
 
 The three on attention are unchanged and all are owner actions or intentional:
 `AC-PRIV-002` (one anon-exposed definer function carrying a live exemption),

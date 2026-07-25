@@ -384,6 +384,9 @@ next to the number that explains it, not to make it disappear.
 ## Register state at close of batch
 
 **309 migrations applied. 28 controls: 25 passing, 3 attention, 0 failing.**
+(Migrations 310 through 315 subsequently took this to **315 migrations, 29
+controls: 26 passing, 3 attention, 0 failing**. See
+[`DEPLOY_COORDINATION.md`](./DEPLOY_COORDINATION.md).)
 
 ```json
 {"total": 28, "passing": 25, "attention": 3, "failing": 0, "automated": 22}
@@ -478,7 +481,8 @@ re-run `tf_controls_evaluate()`. Do not leave it disabled across a deploy.
 **Obligation three of convention 33** remains detected rather than structural.
 Nothing prevents a migration from creating a checker and never wiring its signal
 into a control. `tf_controls_signal_coverage` finds it afterwards, across an
-eleven-checker roster with twenty-five axes, and `CM-SIGNALCOV-026` renders it,
+roster of eleven checkers with twenty-five axes at the close of this batch, since
+grown to twelve and twenty-six by migration 315, and `CM-SIGNALCOV-026` renders it,
 but the creation itself is not refused. That is now the oldest structural gap in
 the governance chain.
 
@@ -490,6 +494,13 @@ would require the migration to declare its own intent, and a self-declared inten
 that the author can set to "not a checker" is an exemption lever of exactly the
 kind migration 265 spent a batch closing. The design work is real and is not
 attempted here.
+
+> **Superseded.** The paragraph below was accurate when this batch closed. It was
+> closed shortly afterwards by migrations 310 through 315, which installed the
+> advisory lock, the deploy log and control `CM-DEPLOY-029`. Read
+> [`DEPLOY_COORDINATION.md`](./DEPLOY_COORDINATION.md) for what actually shipped.
+> The paragraph is retained rather than deleted because it records what the
+> governance chain looked like before the gap was closed.
 
 **Deployment coordination** remains the largest unmitigated governance risk in the
 backend, named by six consecutive verification passes. ClickUp `86bb3etah` carries

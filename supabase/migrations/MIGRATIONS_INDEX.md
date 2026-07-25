@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (261 migrations
+The full, ordered migration history of the Transit & Flow backend (264 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -144,6 +144,51 @@ of what exists so nothing is silently dropped.
 | 259 | 20260725125625 | grant_tier_audit_widen_undeclared_sweep |
 | 260 | 20260725130147 | grant_tier_coverage_induced_failure_proof |
 | 261 | 20260725130356 | grant_tier_coverage_evidence_and_autoticket_widening |
+| 262 | 20260725131610 | grant_tier_audit_coverage_self_enforcement |
+| 263 | 20260725131923 | grant_tier_audit_empty_population_refusal |
+| 264 | 20260725132224 | grant_tier_coverage_enforcement_consumer_widening |
+
+> **Migrations 262 through 264 are one change**, and they are the sequel to
+> 258–261 rather than a repeat of it. That block made the checker's coverage
+> complete and visible. This block makes it **enforced**. Publishing a
+> denominator is not the same as failing on it: between 258 and 261 an operator
+> could see a coverage shortfall in the evidence string, but nothing failed,
+> nobody was paged and no ticket opened. A number that only a diligent reader
+> acts on is a number that gets acted on until the first busy week.
+>
+> 262 makes any `tf_*` function with no row in `tf_function_grant_tiers` a
+> violation regardless of who can execute it, adds `uncovered_total` and
+> `uncovered_unreachable_total` beside the retained
+> `undeclared_reachable_total`, folds the shortfall into `violation_total`, and
+> asserts inside the function body that the two subsets partition the shortfall
+> exactly, raising loudly if three catalog predicates ever stop agreeing. It
+> proves the new class by inducing the shape nothing was watching: a real `tf_*`
+> function, untiered, reachable by **nobody**, with every assertion taken against
+> a baseline measured moments earlier rather than against a typed constant. The
+> load-bearing assertion is that `undeclared_reachable_total` does **not** move,
+> which is what shows the state of the art one migration earlier saw nothing
+> wrong.
+>
+> 263 makes `tf_grant_tier_audit()` **refuse** rather than certify when the `tf_*`
+> population reads zero. Before it, that case returned `coverage_pct: null`
+> beside `violation_total: 0` and the control went green over a failed
+> measurement, which is the `x !~* null` shape and the reason
+> `tf_guard_pattern()` is `plpgsql`. The refusal cannot be induced live without
+> dropping the platform, so it is proved on a clone derived from the live catalog
+> text by exactly two asserted substitutions, the header rename and the
+> population source forced to zero, named outside the `tf_*` namespace so the
+> proof does not perturb the population it tests. That proof is deliberately
+> labelled the weakest of the three in the doc.
+>
+> 264 widens the two consumers again, additively. The `CM-GRANT-021` evidence now
+> separates the shortfall from the exposed subset and names both enforced
+> behaviours, and `tf_grant_tier_autoticket` publishes both halves and closes on
+> the enforced fact rather than the narrower pre-262 one. Closing a ticket on a
+> narrower property than the control enforces is how a ticket queue drifts out of
+> agreement with the control register.
+>
+> Full reasoning, both fixtures, the clone-proof method and the widened runbook
+> are in [`docs/FUNCTION_GRANT_TIERS.md`](../../docs/FUNCTION_GRANT_TIERS.md).
 
 > **Migrations 258 through 261 are one change**, split into four so each half of
 > the work could be asserted before the next was applied. They close a coverage

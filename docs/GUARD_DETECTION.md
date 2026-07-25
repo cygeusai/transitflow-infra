@@ -272,11 +272,11 @@ reappears.
 
 ---
 
-## 6. State after migration 261
+## 6. State after migration 264
 
 | Measurement | Value |
 | --- | --- |
-| Migrations | 261 |
+| Migrations | 264 |
 | Registered guard helpers | 15 |
 | Definer functions scanned | 55 |
 | Unguarded | 0 |
@@ -289,6 +289,8 @@ reappears.
 | Declared in `tf_function_registry` | 84 |
 | Declared grant tiers | 85 (48 admin / 36 staff / 1 anon) |
 | Grant-tier coverage | 84 of 84 `tf_*` functions, 100.0 pct |
+| Grant-tier coverage enforced | yes, since migration 262 (`uncovered_total` gates `violation_total`) |
+| Grant-tier empty-population refusal | yes, since migration 263 |
 | Grant-tier violations | 0 |
 | Automation flags enabled | 0 of 13 |
 
@@ -299,6 +301,27 @@ live reality and widening the audit's undeclared sweep from *anon-reachable* to
 note, arriving from a different direction: here the checker's **rules** were
 wrong, there its **coverage** was wrong, and in both cases the control read
 green. See [`FUNCTION_GRANT_TIERS.md`](./FUNCTION_GRANT_TIERS.md).
+
+**Migrations 262 through 264 add the third direction, and it is the one this
+note should be read against most carefully.** 258 through 261 made the grant
+audit's coverage complete and visible. They did not make it binding: between 259
+and 261 `coverage_pct` was computed, returned and printed into the control's
+evidence string, and `violation_total` did not include the shortfall, so a
+`tf_*` function created without a `tf_apply_grant_tier` call would have dropped
+coverage below 100 and left `CM-GRANT-021` green. Migration 262 made the
+shortfall a violation class, `uncovered_total`, proving it on an untiered fixture
+reachable by **nobody**, the complementary shape migration 260's
+`authenticated`-reachable fixture structurally could not catch. Migration 263
+made the audit refuse a zero population rather than certify one, because dividing
+into an empty denominator returns 100 percent and turns deleting the evidence
+into the cheapest way to pass. Migration 264 widened both consumers additively.
+
+The bearing on guard detection is direct. `tf_guard_detection_audit` publishes
+its own population, 15 registered helpers over 55 definer functions scanned, and
+`AC-GUARDREG-023` fails when the register stops matching. Apply the two questions
+from house rule eleven to it: what fails when the scanned population drops, and
+what does it report when that population is empty? Those are the checks 262 and
+263 installed on the grant audit, and they belong on this one too.
 
 The two controls reading `attention` are `AC-MFA-003` and `DP-PITR-007`. Both
 are owner actions, tracked in ClickUp, and neither is a code defect.

@@ -42,7 +42,7 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - [`MARKETING_ROI_AND_REVENUE.md`](./MARKETING_ROI_AND_REVENUE.md) — collected-revenue convention, channel P&L
 - [`REVENUE_LINKAGE.md`](./REVENUE_LINKAGE.md) — invoice-to-job sweep, natural-key integrity, traceability
 - [`SECURITY_GUARDS_AND_QUEUE_LANES.md`](./SECURITY_GUARDS_AND_QUEUE_LANES.md) — definer-guard axis, `AC-DEFN-017`, queue lane registry, orphan reason codes
-- [`FUNCTION_GRANT_TIERS.md`](./FUNCTION_GRANT_TIERS.md) — the three-tier `EXECUTE` model, the Supabase default-privileges trap and its Postgres-native PUBLIC twin, `tf_apply_grant_tier`, `CM-GRANT-021`, and **the coverage defect closed by migrations 258 through 261**: a checker whose own coverage was decided by the population it was checking
+- [`FUNCTION_GRANT_TIERS.md`](./FUNCTION_GRANT_TIERS.md) — the three-tier `EXECUTE` model, the Supabase default-privileges trap and its Postgres-native PUBLIC twin, `tf_apply_grant_tier`, `CM-GRANT-021`, **the coverage defect closed by migrations 258 through 261** (a checker whose own coverage was decided by the population it was checking), and **the coverage enforcement added by migrations 262 through 264** (publishing a denominator is not the same as failing on it)
 - [`AUTOMATION_ARMING.md`](./AUTOMATION_ARMING.md) — **read before arming anything that reaches a customer.** The thirteen-automation registry, the four-value bounding model, the blast-radius predicate contract, the eight-step arming sequence and its five refusal classes, and the copy-paste arm/disarm/audit runbook
 - [`GUARD_DETECTION.md`](./GUARD_DETECTION.md) — **how the platform decides a `SECURITY DEFINER` function is guarded, and why that decision was wrong until migration 254.** The guard predicate registry, the comment-stripping match, the comments-gated / literals-advisory line, control `AC-GUARDREG-023`, and the induced comment-only guard that proves the whole chain catches
 
@@ -87,6 +87,29 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
   its own coverage (`tf_population_total`, `tf_covered_total`, `coverage_pct`),
   and the control's evidence string must state its denominator. See
   `FUNCTION_GRANT_TIERS.md`.
+- A checker's own coverage is a violation class, not a statistic. Publishing a
+  denominator is not the same as failing on it. Between migrations 258 and 261
+  `tf_grant_tier_audit` printed `coverage_pct` in the evidence string and an
+  operator could see a shortfall, but nothing failed and no ticket opened, so the
+  shortfall was visible and inert. Migration 262 folded `uncovered_total` into
+  `violation_total`: an undeclared function is now a violation whether or not
+  anyone can call it, because being unreachable is not the same as being
+  *intended* to be unreachable and only the register records intent. A number
+  that only a diligent reader acts on is a number that gets acted on until the
+  first busy week.
+- A checker must refuse on an empty population, not certify one. Zero rows is a
+  failed measurement, not a clean result. `tf_grant_tier_audit` raises rather
+  than returning when the `tf_*` population reads zero, `tf_controls_evaluate`
+  propagates the raise as `null`, and the control reports `attention` rather
+  than `passing`. This is the same rule as `tf_guard_pattern()` refusing a null
+  pattern from an empty registry, applied to a count instead of a regex.
+- Where a failure cannot be induced against the live object without breaking the
+  platform, prove it on a **clone derived from the live catalog text** by
+  asserted mechanical substitutions, and name the clone outside the namespace
+  being measured so the proof does not perturb its own population. Assert that
+  each substitution landed and that the branch under test survived into the
+  clone. Label such a proof as weaker than an induced one, in the document, in
+  writing. Migration 263 does this for the empty-population refusal.
 - Widen a signal, never repurpose a key. When migration 259 widened the
   undeclared sweep, `undeclared_anon_total` kept its original meaning as a strict
   subset and `undeclared_reachable_total` was added beside it. Redefining a key

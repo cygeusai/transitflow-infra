@@ -4,7 +4,7 @@ The single troubleshooting reference for the Transit & Flow backend. Written to
 be read at 2am by someone who did not build it.
 
 State captured 2026-07-25 against Supabase project `kjooyhvynkzuvsixsutt` at
-migration 261. Every number in this document was read out of the live database,
+migration 264. Every number in this document was read out of the live database,
 not remembered.
 
 ---
@@ -163,6 +163,8 @@ Routed by what you observe. Each row names the check to run first.
 | `42501: permission denied for function` | The function is `admin` tier; you are calling it as `authenticated` | `select tier from tf_function_grant_tiers where proname='<name>'` |
 | A new function is reachable by `anon` and nobody granted it | Supabase `ALTER DEFAULT PRIVILEGES`; `revoke from public` does not undo it, and neither does `revoke from anon` alone, because Postgres grants EXECUTE to PUBLIC on every new function | `tf_grant_tier_audit()`; fix with `tf_apply_grant_tier` |
 | `CM-GRANT-021` evidence says "across N of 84" with N below 84 | somebody created a `tf_*` function without a `tf_apply_grant_tier` call in the same migration | `tf_grant_tier_audit()` → `coverage_pct` and the `violations` array, which names it |
+| `CM-GRANT-021` reads `failing` and the named function is reachable by nobody | since migration 262 an undeclared tier is a violation whether or not anything can reach it, because unreachable is not the same as *intended* to be unreachable | `tf_grant_tier_audit()` → `uncovered_total` and `uncovered_unreachable_total`; the violation row carries `reachable_by: 'none'` and a ready `tf_apply_grant_tier` remedy |
+| `CM-GRANT-021` reads `attention` with no evidence string at all | `tf_grant_tier_audit()` itself raised, so `tf_controls_evaluate` caught it and propagated null; since migration 263 the most likely cause is the empty-population refusal | call `select public.tf_grant_tier_audit();` directly and read the raise: `refuses to certify` means the `tf_*` population came back zero |
 | Two customer records for one person | Dedup sweep has not run, or phones differ in format | `tf_merge_duplicate_customers(true)` (dry run) |
 | Scheduled report did not arrive in Slack | Cron fired but Slack connector degraded | `tf_scheduler_health()` then the `integration_settings` query above |
 | A `tf_*` call raises `42883` or does something unexpected | The name implies a read; the function is a writer | *The first ten minutes*, side-effect table |
@@ -302,8 +304,11 @@ Since migration 248 (`grant_tier_drift_control`) the tiers are **data, not
 prose**. They live in
 `public.tf_function_grant_tiers`, they are applied by
 `public.tf_apply_grant_tier`, they are checked by `public.tf_grant_tier_audit`,
-and control `CM-GRANT-021` fails the board if the live ACL stops matching. The
-full treatment is in `FUNCTION_GRANT_TIERS.md`. The short version:
+and control `CM-GRANT-021` fails the board if the live ACL stops matching. Since
+migration 262 the checker also fails the board on **its own coverage**, and since
+migration 263 it refuses to certify an empty population rather than reporting one
+as complete. The full treatment is in `FUNCTION_GRANT_TIERS.md`. The short
+version:
 
 | Tier | Roles granted | Requires an in-body guard | Count | Typical members |
 | --- | --- | --- | --- | --- |
@@ -347,6 +352,51 @@ zero-reachability-change assertion, 259 widened the sweep to
 and 261 widened the two consumers still reading the narrow number. Grants were
 deliberately **not** demoted in bulk, because silently revoking `authenticated`
 from functions the Lovable Hub calls is quiet corruption.
+
+**And the coverage number was still inert, closed by migrations 262 through
+264.** 258 through 261 made the checker's coverage complete and visible. They did
+not make it *enforced*. Between 259 and 261 `coverage_pct` was computed, returned
+and printed into the control's evidence string, and nothing failed on it. A
+function created without a `tf_apply_grant_tier` call would have dropped
+`coverage_pct` below 100 and `CM-GRANT-021` would still have read `passing`,
+because `violation_total` did not include the shortfall. Publishing a denominator
+is not the same as failing on it. Migration 262 folded the shortfall into
+`violation_total` as a first-class class, `uncovered_total`, and proved it by
+inducing the one shape migration 260's fixture structurally could not catch: an
+untiered function reachable by **nobody**. That shape fell out of every existing
+violation class while quietly dropping coverage. The reasoning for treating it as
+a violation rather than a benign gap is that being unreachable is not the same as
+being *intended* to be unreachable, and only the register records intent.
+
+Migration 263 closed the complementary hole at the other end. If the population
+read from `pg_proc` ever came back zero, the arithmetic would have produced
+`coverage_pct` 100 on a denominator of nothing and certified a failed measurement
+as full coverage. The audit now raises instead, with a message that says so in
+words: *"An empty population is a failed measurement, not full coverage. Emptying
+the input must never be a way to pass a control."* `tf_controls_evaluate` catches
+that raise and propagates null, which surfaces as `CM-GRANT-021` reading
+`attention` with no evidence, which is the symptom row above.
+
+Migration 264 widened the two consumers, `tf_controls_evaluate` and
+`tf_grant_tier_autoticket`, additively, per convention 21. Neither existing key
+changed meaning; `uncovered_total` and `uncovered_unreachable_total` were added
+beside `undeclared_anon_total` and `undeclared_reachable_total`, which remain
+strict subsets. `violation_total` is deliberately
+`drift_total + missing_total + uncovered_total` and **not** the sum of every key,
+because `undeclared_reachable_total` is a strict subset of `uncovered_total` and
+summing both would double-count every exposed function. An internal-consistency
+raise enforces the partition: `uncovered_total` must equal
+`undeclared_reachable_total` plus `uncovered_unreachable_total`, or the audit
+raises rather than returning an arithmetic it cannot explain.
+
+The live `CM-GRANT-021` evidence string today, verbatim, states its denominator
+and its enforcement:
+
+> 0 function grant-tier violation(s) across 84 of 84 tf_* fn(s) declared (100.0
+> pct), of which 0 undeclared and 0 of those reachable: live EXECUTE grants
+> versus tf_function_grant_tiers, plus every tf_* fn with no declared tier
+> whether reachable or not. Coverage is enforced since 262, and an empty
+> population is refused rather than certified since 263
 
 The correct form is `revoke all on function ... from public, anon,
 authenticated;` followed by the intended grant. In practice, never write that by
@@ -561,7 +611,7 @@ event, because the next operator has no way to know whether it was safe.
 
 ## Conventions register
 
-Twenty-one conventions. Repeatedly, the highest-yield defect on this platform has been two writers
+Twenty-four conventions. Repeatedly, the highest-yield defect on this platform has been two writers
 each holding a different convention, both correct in isolation, silently
 disagreeing at the seam. Every one of these is now enforced somewhere the
 disagreement becomes an error at write time rather than a discrepancy at read
@@ -588,8 +638,11 @@ time.
 | 17 | Blast-radius predicate arity | every predicate references both `$1` (cutover) and `$2` (company), using the visible tautology where there is no cutover | `tf_automation_blast_radius` executes `using coalesce(v_since, now()), v_company`; a predicate that ignores either one raises at call time |
 | 18 | Registry note currency | the note is part of the change, not documentation of it, and is rewritten in the same transaction as the sweep | `tf_automation_note_drift`, control `CM-NOTEDRIFT-022`, ticket key `safety:note_drift` |
 | 19 | Guard detection as data, matched on code | guard-helper names live in a table, and the match runs against comment-stripped source so a comment cannot stand in for a guard | `tf_guard_predicate_registry`, `tf_guard_pattern`, `tf_strip_sql_comments`, `tf_guard_detection_audit`, control `AC-GUARDREG-023`, ticket key `safety:guard_detection` |
-| 20 | Checker coverage is published, not assumed | a register a checker reads is complete by construction, the audit returns its own `population` / `covered` / `coverage_pct`, and the control's evidence string states its denominator | `tf_grant_tier_audit` coverage keys, the widened `CM-GRANT-021` evidence string, migration 260's induced-failure proof |
-| 21 | Widen a signal, never repurpose a key | a narrowed key keeps its original meaning and the wider key is added beside it, because a redefined key does not break consumers, it makes them quietly wrong | `undeclared_anon_total` retained as a strict subset of `undeclared_reachable_total` across migrations 259 and 261 |
+| 20 | Checker coverage is published, not assumed | a register a checker reads is complete by construction, the audit returns its own `population` / `covered` / `coverage_pct`, and the control's evidence string states its denominator | `tf_grant_tier_audit` coverage keys, the widened `CM-GRANT-021` evidence string, migration 260's induced-failure proof; publication alone proved insufficient and is now backed by convention 22 |
+| 21 | Widen a signal, never repurpose a key | a narrowed key keeps its original meaning and the wider key is added beside it, because a redefined key does not break consumers, it makes them quietly wrong | `undeclared_anon_total` retained as a strict subset of `undeclared_reachable_total` across migrations 259 and 261, and both retained beside `uncovered_total` across 262 and 264 |
+| 22 | A checker's own coverage is a violation class, not a statistic | if the register a checker reads is incomplete, the checker **fails**; a shortfall is folded into `violation_total`, not merely printed next to it | `tf_grant_tier_audit` `uncovered_total`, gating since migration 262, proved by an untiered fixture reachable by nobody |
+| 23 | A checker must refuse on an empty population, not certify one | zero inputs is a failed measurement, and the checker raises rather than dividing into a denominator of nothing and reporting 100 percent | `tf_grant_tier_audit` empty-population raise, migration 263; `tf_controls_evaluate` propagates null, so the control reads `attention` rather than `passing` |
+| 24 | Prove by inducing the failure; where the live object cannot be broken, prove on a derived clone and say so | build the clone from the live catalog text by asserted mechanical substitutions, name it outside the population being measured so the proof does not perturb itself, assert every substitution landed and that the branch under test survived, drop it, then label the proof as weaker than an induced one **in writing** | migration 263's `zz__granttier_refusal_clone()`, labelled in `FUNCTION_GRANT_TIERS.md` as the weakest of the three proofs in that document |
 
 The countermeasure that keeps working is the same every time: express the
 convention in the database, on the *normalised* form of the value, so violation
@@ -855,6 +908,39 @@ reading the narrow number, additively.
 The general shape: **a checker must publish what it found, what it looked at, and
 what it could not see.** A violation count without a denominator is an opinion.
 
+**The coverage number that was visible and inert.** The direct sequel to the
+defect above, and the reason that defect gets two entries instead of one.
+Migrations 258 through 261 made `tf_grant_tier_audit`'s coverage complete and
+visible: `tf_population_total`, `tf_covered_total` and `coverage_pct` were
+computed, returned, and concatenated into the `CM-GRANT-021` evidence string
+where a human would read them. Nothing failed on them. Had somebody created a
+`tf_*` function without a `tf_apply_grant_tier` call, `coverage_pct` would have
+dropped below 100, the evidence string would have said so in plain text, and the
+control would still have read `passing`, because `violation_total` was
+`drift_total + missing_total + undeclared_reachable_total` and the coverage
+shortfall was in none of those. **Publishing a denominator is not the same as
+failing on it.** Nobody was paged, no ticket opened, and the number sat in an
+evidence string waiting for somebody to happen to read it.
+
+The blind spot had a specific shape, and it was the complement of the one
+migration 260 proved. 260's fixture was reachable by `authenticated`, so it
+landed in `undeclared_reachable_total` and was caught. An untiered function
+reachable by **nobody** fell out of every violation class while still dropping
+`coverage_pct`. Migration 262 made any uncovered function a violation on the
+reasoning that being unreachable is not the same as being *intended* to be
+unreachable, and only the register records intent. It proved this with a fixture
+built to be the caught-by-nothing shape, asserting that
+`undeclared_reachable_total` stayed **unchanged** while `uncovered_total`,
+`uncovered_unreachable_total` and `violation_total` all moved, then dropping it
+and asserting every counter returned to baseline.
+
+Migration 263 closed the mirror-image failure: a zero population would have
+certified a failed measurement as 100 percent coverage. The audit now raises. The
+general shape here is worth carrying to every other checker on the platform:
+**a number a checker publishes but never fails on is documentation, not a
+control.** Ask of any coverage figure, what happens when this drops? If the
+answer is "the string changes", it is inert.
+
 **The half-revoke that revokes nothing.** Found while building the fixture above.
 PostgreSQL grants EXECUTE to the PUBLIC pseudo-role on every newly created
 function, independently of Supabase's named-role default privileges. Because
@@ -870,7 +956,7 @@ assertion, which is the harness working exactly as intended.
 
 ## The house rules
 
-Ten rules, each of which exists because breaking it cost real time.
+Eleven rules, each of which exists because breaking it cost real time.
 
 **A migration that creates or replaces a function must drive that function in a
 post-check, not inspect it.** Migration 229 in this repo's ordinal series applied
@@ -960,6 +1046,24 @@ dropped after the exception handler so it comes out on every code path, and
 recovery asserted afterwards. Ask of every new control: what happens if this
 control's own evaluation is wrong? If the answer is "it reports passing", the
 control is not finished.
+
+**A number the checker never fails on is not a control, and an empty input is
+not a pass.** The eleventh rule is the sequel to the tenth, and it exists because
+following the tenth was not enough. `tf_grant_tier_audit` was given a full
+coverage denominator in migration 259, published it in its payload and in
+`CM-GRANT-021`'s evidence string, and gated nothing on it for three migrations.
+A `tf_*` function created without a `tf_apply_grant_tier` call would have driven
+`coverage_pct` below 100, changed the wording of an evidence string, and left the
+control green. Migration 262 folded the shortfall into `violation_total` and
+proved it on the one fixture shape the earlier proof structurally could not
+catch, an untiered function reachable by nobody. Migration 263 closed the mirror
+image: a population of zero would have divided into an empty denominator and
+certified a failed measurement as full coverage, which makes deleting the
+evidence the cheapest way to pass the control. It now raises. Two questions
+belong on every metric a checker returns. **What fails when this number goes
+bad?** If the answer is "the wording of a string", nothing fails. **What does
+this report when its input is empty?** If the answer is "success", the checker
+rewards its own blindness.
 
 ---
 
@@ -1318,7 +1422,7 @@ Read live from the catalog, not counted by hand.
 
 | | Count |
 | --- | --- |
-| Migrations applied | 261 |
+| Migrations applied | 264 |
 | Base tables in `public` | 171 |
 | Tables with RLS enabled | 171 (100%) |
 | RLS policies | 582 |
@@ -1372,9 +1476,21 @@ case, and update the consumers that were still reading the narrow number.
 `coverage_pct` is now part of the audit payload and part of `CM-GRANT-021`'s
 evidence string, so the denominator can never go unstated again.
 
-The lesson generalizes past grants: **a register a checker reads must be complete
-by construction, or the checker is measuring its own register rather than the
-system.** See `FUNCTION_GRANT_TIERS.md`.
+**And then this line had to be corrected a second time.** Making the denominator
+visible is not the same as making it binding. Between 259 and 261 `coverage_pct`
+was published and nothing failed on it, so a function created without a
+`tf_apply_grant_tier` call would have dropped coverage below 100 while
+`CM-GRANT-021` stayed green. Migrations 262 through 264 closed that: the coverage
+shortfall is now a violation class, `uncovered_total`, folded into
+`violation_total`; an empty population is refused rather than certified; and both
+consumers were widened additively. The proof for 262 was an untiered fixture
+reachable by nobody, the one shape migration 260's fixture structurally could not
+catch.
+
+The lesson generalizes past grants, in two parts: **a register a checker reads
+must be complete by construction, or the checker is measuring its own register
+rather than the system**, and **a coverage number the checker never fails on is
+documentation, not a control.** See `FUNCTION_GRANT_TIERS.md`.
 
 The two controls in `attention` are both owner actions rather than code defects:
 `AC-MFA-003`, one privileged account without MFA, and `DP-PITR-007`,
@@ -1438,10 +1554,10 @@ subject-specific notes beside it in `docs/`:
 - `MARKETING_ROI_AND_REVENUE.md` — collected-revenue convention, channel P&L
 - `REVENUE_LINKAGE.md` — invoice-to-job sweep, natural-key integrity
 - `SECURITY_GUARDS_AND_QUEUE_LANES.md` — the guard sweep, AC-DEFN-017, lane registry
-- `FUNCTION_GRANT_TIERS.md` — the three-tier grant model, the Supabase default-privileges trap, `CM-GRANT-021`
+- `FUNCTION_GRANT_TIERS.md` — the three-tier grant model, the Supabase default-privileges trap, `CM-GRANT-021`, the coverage defect closed by migrations 258 through 261 and the coverage *enforcement* added by 262 through 264
 - `AUTOMATION_ARMING.md` — the automation registry, the bounding model, the blast-radius predicate contract, the arming sequence and its refusal classes, `CM-NOTEDRIFT-022`
 - `GUARD_DETECTION.md` — how a `SECURITY DEFINER` function is judged guarded, the guard predicate registry, the comment-stripped match, the comments-gated / literals-advisory line, `AC-GUARDREG-023`, and the induced comment-only guard that proves the chain
-- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`, and 258 through 261 with theirs in `FUNCTION_GRANT_TIERS.md`
+- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`, and 258 through 264 with theirs in `FUNCTION_GRANT_TIERS.md`
 
 Notion carries the same material for non-engineers under **🧭 Operations Hub —
 SOPs & FAQs**, with persona-routed SOPs and FAQs. ClickUp carries the
@@ -1665,6 +1781,58 @@ The countermeasure is structural rather than procedural: the register must be
 complete by construction, the audit must return its own coverage, and the
 control's evidence string must carry the denominator, so that partial coverage is
 visible in the same glance as the result.
+
+**Pass 6, 2026-07-25, at migration 264.** Three migrations landed between pass 5
+and pass 6, and pass 6 is the audit of pass 5's own fix. Pass 5 made the
+instrument's coverage complete and visible. Pass 6 found that visible was where
+it stopped.
+
+| Claim as published | Live reality | Resolution |
+| --- | --- | --- |
+| "`coverage_pct` is now part of the audit payload and part of `CM-GRANT-021`'s evidence string, so the denominator can never go unstated again" | true, and insufficient. The denominator was stated and never enforced. `violation_total` was `drift_total + missing_total + undeclared_reachable_total`, so a coverage shortfall changed the evidence text and failed nothing. A new `tf_*` function with no `tf_apply_grant_tier` call would have printed a number below 100 into a string nobody was paged on | migration 262 adds `uncovered_total` as a first-class violation class and folds it into `violation_total` |
+| Migration 260's induced-failure proof read as proof of the coverage mechanism | 260's fixture was reachable by `authenticated`, so it landed in `undeclared_reachable_total`. The **complementary** shape, untiered and reachable by nobody, fell out of every violation class while still dropping `coverage_pct`. The proof and the gap were disjoint | migration 262's fixture is built to be exactly that shape, and asserts `undeclared_reachable_total` stays **unchanged** while `uncovered_total`, `uncovered_unreachable_total` and `violation_total` each move by one |
+| The audit's coverage arithmetic was assumed safe at every input | at a population of zero it would have divided into nothing and returned `coverage_pct` 100, certifying a failed measurement as full coverage. Emptying the input was a way to pass the control | migration 263 raises instead: *"An empty population is a failed measurement, not full coverage."* `tf_controls_evaluate` catches it and propagates null, so the control reads `attention`, never `passing` |
+| `violation_total` could simply sum the counters | `undeclared_reachable_total` is a strict subset of `uncovered_total`; summing both double-counts every exposed function | `violation_total` is `drift_total + missing_total + uncovered_total`, and an internal-consistency raise enforces that `uncovered_total` partitions exactly into `undeclared_reachable_total` plus `uncovered_unreachable_total` |
+| Migrations 261, conventions 21, house rules 10 | 264 / 24 / 11 | inventory, conventions register, house rules, defect-pattern library and the grant-tier document re-read and re-counted |
+
+Three conventions went into the register this pass, numbers 22, 23 and 24: **a
+checker's own coverage is a violation class, not a statistic**, **a checker must
+refuse on an empty population, not certify one**, and **prove by inducing the
+failure; where the live object cannot be broken, prove on a derived clone and say
+so**. One defect class went into the library, **the coverage number that was
+visible and inert**, and one house rule went in as the eleventh: *a number the
+checker never fails on is not a control, and an empty input is not a pass*.
+
+**On the weakest proof in the set, stated deliberately.** The empty-population
+refusal cannot be induced against the live function without dropping every `tf_*`
+function in the schema. Rather than fall back to a catalog-text presence check,
+which would have violated the house rule *a checker never observed catching
+anything is not a checker*, migration 263 built
+`zz__granttier_refusal_clone()` from the live catalog text by two asserted
+mechanical substitutions, named it outside the `tf_*` namespace so the proof
+would not perturb the population it was measuring, called it, captured the raise,
+asserted the message content, and dropped it. That is a real observation of the
+branch firing. It is still weaker than an induced failure on the live object,
+because the clone is a copy, and that weakness is written down in
+`FUNCTION_GRANT_TIERS.md` rather than left for a reader to notice. It is now
+convention 24.
+
+Everything re-measured this pass agreed on the second reading: 264 migrations,
+271 functions in `public`, 84 `tf_*` functions, 85 declared grant-tier rows
+covering 84 of 84 at `coverage_pct` 100.0, `violation_total` 0, `uncovered_total`
+0, `uncovered_unreachable_total` 0, 23 controls at 21 passing / 2 attention / 0
+failing. The two in `attention` remain `AC-MFA-003` and `DP-PITR-007`, both owner
+actions rather than code defects. All thirteen automation flags read `false`.
+
+The finding worth carrying forward: pass 4 asked *is the verifier correct*, pass
+5 asked *what is the verifier pointed at*, and pass 6 asks **what happens when
+the verifier's own number goes bad**. A metric that is computed, returned and
+printed but never gates anything is not a control, it is a comment with better
+production values. The test to apply to any coverage figure on this platform is
+one question: what fails when this drops? If the answer is "the wording of a
+string", nothing fails. And the mirror-image question is just as load-bearing:
+what does this report when its input is empty? If the answer is "success", the
+cheapest way to pass the control is to delete the evidence.
 
 ---
 

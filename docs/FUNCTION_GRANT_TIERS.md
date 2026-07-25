@@ -3,10 +3,16 @@
 How `EXECUTE` privilege is decided, applied, checked and enforced on every
 function in `public`.
 
-**State captured 2026-07-25 at migration 261.** Introduced by migration 247
+**State captured 2026-07-25 at migration 264.** Introduced by migration 247
 (`grant_tier_remediation`), made permanent by migration 248
-(`grant_tier_drift_control`), and given full surface coverage by migrations 258
-through 261. Control `CM-GRANT-021`. Ticket key `safety:grant_tier`.
+(`grant_tier_drift_control`), given full surface coverage by migrations 258
+through 261, and given **coverage enforcement** by migrations 262 through 264.
+Control `CM-GRANT-021`. Ticket key `safety:grant_tier`.
+
+The distinction between 258–261 and 262–264 is the whole point of this document.
+The first block made the checker's coverage **complete and visible**. The second
+block made it **enforced**: coverage below population is now a violation, and an
+empty population is refused rather than certified.
 
 ---
 
@@ -322,13 +328,33 @@ select public.tf_grant_tier_audit();
   granted or revoked outside `tf_apply_grant_tier`.
 - **`missing_total`** — a declared tier naming a function identity that no longer
   exists. Usually a signature change that did not update the declaration.
-- **`undeclared_reachable_total`** — a `tf_*` SECURITY DEFINER function reachable
-  by `anon` **or** `authenticated` that has no declared tier. **This is the
-  gating class since migration 259.** It is what the platform's default
-  privileges create on their own, and what an author creates by forgetting the
-  tier call.
+- **`uncovered_total`** — **the gating class since migration 262.** Every `tf_*`
+  function with no row in `tf_function_grant_tiers`, whether or not anybody can
+  currently execute it. This is the class that makes the register complete by
+  construction rather than by good intentions.
 
-### Coverage keys, added by migration 259
+`violation_total` is `drift_total + missing_total + uncovered_total`. It is
+**not** the sum of every key below, because two of them are strict subsets of
+`uncovered_total` and adding them would double count:
+
+- **`undeclared_reachable_total`** — the subset of `uncovered_total` reachable by
+  `anon` **or** `authenticated`. This was the gating class between migrations 259
+  and 262, and it is still the number that says how much privilege is actually
+  exposed right now. It is what the platform's default privileges create on their
+  own, and what an author creates by forgetting the tier call.
+- **`uncovered_unreachable_total`** — the complementary subset, added by
+  migration 262: undeclared and reachable by nobody today. Nothing has leaked,
+  but the function is absent from the register the checker reads, so a future
+  `GRANT` would drift unobserved. Being unreachable is not the same as being
+  *intended* to be unreachable, and only the register records intent.
+
+The two subsets must partition the shortfall exactly. The audit asserts this in
+its own body and raises `tf_grant_tier_audit internal inconsistency` if they ever
+disagree, on the reasoning that if three catalog predicates stop agreeing with
+each other then every number the function returns is untrustworthy and loud
+failure beats quiet arithmetic.
+
+### Coverage keys, added by migration 259, enforced by migration 262
 
 - **`tf_population_total`** — how many `tf_*` functions exist. 84 today.
 - **`tf_covered_total`** — how many of them carry a declared tier. 84 today.
@@ -343,8 +369,29 @@ select public.tf_grant_tier_audit();
 Each violation carries a `remedy` string containing the exact
 `tf_apply_grant_tier` call that fixes it. Copy it, run it, re-run the audit.
 
+### The empty-population refusal, added by migration 263
+
+If `tf_population_total` comes back **zero**, the audit does not return. It
+raises:
+
+> `tf_grant_tier_audit refuses to certify: the tf_* population read from pg_proc returned zero functions. An empty population is a failed measurement, not full coverage. Emptying the input must never be a way to pass a control.`
+
+Zero `tf_*` functions is not a clean platform, it is a catalog read that did not
+do what it was asked. Before 263 that case returned `coverage_pct: null` beside
+`violation_total: 0`, and `CM-GRANT-021` went green over a measurement that had
+failed. This is the same shape as `x !~* null` and the same reason
+`tf_guard_pattern()` is `plpgsql`: emptying the input must never be a way to pass
+a control.
+
+`tf_controls_evaluate` wraps the call in
+`begin ... exception when others then v_gtj := null; end`, so the refusal
+propagates as `null` and the control reports **`attention`**, never `passing`.
+That wiring predates this migration and is asserted intact by migration 264.
+
 **Live today:** `declared_total: 85`, `tf_covered_total: 84`,
-`tf_population_total: 84`, `coverage_pct: 100.0`, `violation_total: 0`.
+`tf_population_total: 84`, `coverage_pct: 100.0`, `uncovered_total: 0`,
+`uncovered_unreachable_total: 0`, `undeclared_reachable_total: 0`,
+`violation_total: 0`.
 
 ### A PostgreSQL gotcha, documented because it cost time
 
@@ -372,14 +419,19 @@ CASE.
 
 Migration 261 widened the evidence string, because the old one stated the
 violation count without stating the surface it was counted over, which is
-precisely how the coverage defect stayed invisible for thirteen migrations. It
-now reads, verbatim, today:
+precisely how the coverage defect stayed invisible for thirteen migrations.
+Migration 264 widened it again, to state the shortfall and the exposed subset
+separately and to name the two behaviours that are now enforced. It reads,
+verbatim, today:
 
-> `0 function grant-tier violation(s) across 84 of 84 tf_* fn(s) declared (100.0 pct): live EXECUTE grants versus tf_function_grant_tiers, plus any fn reachable by anon or authenticated with no declared tier`
+> `0 function grant-tier violation(s) across 84 of 84 tf_* fn(s) declared (100.0 pct), of which 0 undeclared and 0 of those reachable: live EXECUTE grants versus tf_function_grant_tiers, plus every tf_* fn with no declared tier whether reachable or not. Coverage is enforced since 262, and an empty population is refused rather than certified since 263`
 
 A reader who sees `across 61 of 84` now knows the green is partial without
-having to go and query anything. **A control's evidence must state its
-denominator.**
+having to go and query anything, and a reader who sees `23 undeclared and 4 of
+those reachable` knows immediately how much of the gap is live exposure and how
+much is register debt. **A control's evidence must state its denominator, and
+when it enforces something it must say so, because an operator reading evidence
+at 2am is deciding how much to trust the green.**
 
 **Ticket key `safety:grant_tier`**, produced by `tf_grant_tier_autoticket()`,
 reached by `tf_safety_autoticket()` as section 4, driven by pg_cron job 46 at
@@ -398,13 +450,24 @@ thing that had actually failed. The ticket now carries:
 ```
 Undeclared (reachable by anon or authenticated, no declared tier): N
   of which anon-reachable: M
+Undeclared in total (no declared tier at all, reachable or not): U
+  of which reachable by nobody today: V
 Surface measured: 84 of 84 tf_* function(s) carry a declared tier
 ```
 
-and the auto-close message names the surface it closed over. The return payload
-gained `undeclared_reachable_total`, `tf_covered_total` and
-`tf_population_total` **additively**, keeping `undeclared_anon_total` intact, so
-no consumer of the old shape breaks.
+The last two lines were added by migration 264, keeping the 261 lines exactly as
+they were. The auto-close message names the surface it closed over and, since
+264, certifies the enforced fact rather than the narrower one: it now reads *zero
+`tf_*` functions carrying no declared tier at all, reachable or not*, where
+before 264 it certified only *zero functions reachable by anon or authenticated
+without a declared tier*. Closing a ticket on a narrower property than the one
+the control now enforces is how a ticket queue drifts out of agreement with the
+control register.
+
+The return payload gained `undeclared_reachable_total`, `tf_covered_total` and
+`tf_population_total` at 261, then `uncovered_total` and
+`uncovered_unreachable_total` at 264, all **additively**, keeping
+`undeclared_anon_total` intact, so no consumer of any earlier shape breaks.
 
 **The `anon_secdef_nonpublic` axis of `tf_security_scan()`**, which catches the
 same hole from the opposite direction and predates this work.
@@ -496,15 +559,79 @@ fixture is removed on every code path including every failure path. Only then is
 `pg_proc`, population is back where it started, coverage is complete again,
 `violation_total` is 0, and `CM-GRANT-021` reads `passing`.
 
-### Still open: the checker does not self-enforce its own coverage
+### Migration 262 proved coverage *enforcement*, which is not the same thing
 
-Migration 260 **asserts** that `tf_covered_total` equals `tf_population_total`.
-`tf_grant_tier_audit()` does not yet **refuse** to certify when coverage drops
-below population on a healthy platform, the way `tf_guard_pattern()` refuses to
-return a null pattern from an empty registry. Today a coverage collapse shows as
-a falling `coverage_pct` inside an otherwise-passing evidence string rather than
-as a loud failure. That is a known gap, tracked, and the fix follows the
-migration 255 null-propagation pattern.
+Through migration 261 the audit **reported** coverage and did not **enforce** it.
+An untiered `tf_*` function that happened to be reachable by nobody fell out of
+every violation class: `tf_covered_total` dropped, `coverage_pct` dropped, and
+`violation_total` stayed at zero, so `CM-GRANT-021` stayed green. Coverage that
+is reported but not enforced is a number on a dashboard, not a control.
+
+Migration 260's fixture could not have caught this, because that fixture was
+deliberately reachable by `authenticated`. Migration 262 induces the
+complementary shape, the one nothing was watching: a real `tf_*` function, really
+untiered, reachable by **nobody**.
+
+```sql
+create function public.tf__granttier_fixture_uncovered()
+returns int language sql stable security definer set search_path to 'public'
+as $fx$ select 1; $fx$;
+
+revoke all on function public.tf__granttier_fixture_uncovered()
+  from public, anon, authenticated;
+```
+
+Note the absence of a `grant`. Note also that the revoke names `public`, `anon`
+and `authenticated` in one statement: a fixture-setup assertion refuses to
+proceed if either role can still execute it, because a reachable fixture would be
+caught by the 259 sweep and would prove nothing.
+
+Every assertion is taken relative to a **measured baseline** read immediately
+before the fixture is created, not against a constant somebody typed, so the
+proof does not rot the next time the platform grows a function. While the fixture
+is live:
+
+1. `undeclared_reachable_total` is **unchanged**. This is the assertion that
+   makes the migration meaningful: the 259 sweep, the state of the art one
+   migration earlier, sees nothing wrong.
+2. `uncovered_total` is baseline **+1** and `uncovered_unreachable_total` is
+   exactly **1**.
+3. `violation_total` is baseline **+1**, which is what `CM-GRANT-021` reads.
+4. The `violations` array **names** the fixture, with `reachable_by: none` and a
+   copy-pasteable `tf_apply_grant_tier` remedy. Counting is not enough.
+5. `coverage_pct` falls below 100.
+
+The fixture is then dropped, its absence from `pg_proc` asserted, and all four of
+population, covered, uncovered and violation count asserted back at baseline.
+
+### Migration 263 proved the empty-population refusal, on a derived clone
+
+The refusal cannot be induced against the live function without dropping every
+`tf_*` function on the platform, which is not a test, it is an outage. Pretending
+otherwise, or asserting only that the branch *text* exists in the catalog, would
+be a checker never observed catching anything.
+
+Migration 263 instead builds a clone from the **live catalog text** by exactly two
+mechanical substitutions: the `CREATE OR REPLACE FUNCTION` header is renamed to
+`public.zz__granttier_refusal_clone()`, and the population `select count(*)` is
+replaced with `v_population := 0;`. Both substitutions are asserted to have
+landed, and the clone is asserted to still contain the refusal branch. The branch
+under test is therefore the production branch, character for character, with one
+input forced.
+
+The clone is named **outside** the `tf_*` namespace deliberately, so that its
+existence does not perturb the population it is testing.
+
+Calling it must raise. The migration asserts three things: that it raised at all
+rather than returning a result, that the message contains `refuses to certify`,
+and that it contains `Emptying the input must never be a way to pass a control`.
+The clone is then dropped, its absence asserted, and the live population asserted
+back at its pre-proof value.
+
+This is the weakest of the three proofs in this document and it is labelled as
+such on purpose. It proves the logic on identical code with a forced input. It
+does not prove that `pg_proc` can return zero rows, which is the point, since if
+it ever does, something has gone far more wrong than a grant tier.
 
 ---
 
@@ -538,6 +665,22 @@ select p.proname, pg_get_function_identity_arguments(p.oid) as ident_args,
 Read the body, decide the tier honestly, and declare it. Do not declare `admin`
 reflexively if the Hub calls it; declare `staff` and confirm the body carries a
 `user_is_internal_staff` predicate, or `AC-DEFN-017` will fail next.
+
+Since migration 262 this is not optional housekeeping: `coverage_pct` below 100
+means `uncovered_total` is non-zero, which means `violation_total` is non-zero,
+which means `CM-GRANT-021` is **failing** and `safety:grant_tier` has an open
+ticket naming the function. Read `undeclared_reachable_total` first to decide
+urgency. Non-zero means privilege is exposed right now and the fix is same-day.
+Zero, with `uncovered_unreachable_total` carrying the whole shortfall, means
+nothing has leaked and the debt is a register entry, not an incident.
+
+**If `CM-GRANT-021` reads `attention` with no evidence.** The audit raised rather
+than returned, and `tf_controls_evaluate` propagated `null` instead of
+substituting a zero. Run `select public.tf_grant_tier_audit();` directly and read
+the error. If it is the empty-population refusal added by migration 263, the
+`tf_*` population read back as zero, which is a catalog or search-path problem
+and not a grant problem. Do not treat `attention` here as a softer `passing`; it
+means the measurement did not happen.
 
 **If `drift_total` is non-zero.** Somebody ran GRANT or REVOKE outside
 `tf_apply_grant_tier`. The violation's `remedy` string restores the declared
@@ -578,3 +721,18 @@ revealed it, the denominator, was never printed anywhere a human would read it.
 A checker must publish three things, not one: what it found, what it looked at,
 and what it could not see. Transit & Flow now requires all three in the evidence
 string of every automated control.
+
+Migrations 262 through 264 add the sentence that turns that requirement into a
+control rather than a habit. **Publishing coverage is not enforcing it.** Between
+258 and 261 the denominator was printed in the evidence string and an operator
+could see a shortfall, but nothing failed, nobody was paged, and no ticket
+opened. A number that only a diligent reader acts on is a number that gets acted
+on until the first busy week.
+
+So the rule Transit & Flow carries forward is stricter than the one this document
+opened with:
+
+> A checker's own coverage is a violation class, not a statistic. If the register
+> it reads is incomplete, the checker fails. If the population it reads is empty,
+> the checker refuses. Neither case is allowed to be green, and neither case is
+> allowed to be merely visible.

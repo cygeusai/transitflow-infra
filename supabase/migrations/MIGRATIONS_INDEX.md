@@ -61,6 +61,7 @@ of what exists so nothing is silently dropped.
 | 171 | 20260724224440 | tf_controls_evaluate_distinct_accounts |
 | 172 | 20260724225908 | auto_ticket_registry_and_producers |
 | 173 | 20260724225950 | tf_integration_watchdog_autoticket_wiring |
+| 174 | 20260724235924 | tf_platform_overview |
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

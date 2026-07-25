@@ -47,6 +47,17 @@ All producer functions are SECURITY DEFINER with pinned `search_path`, executabl
 only by `service_role` (no anon, no authenticated). `auto_tickets` enforces RLS
 (internal-staff read). Post-deploy security scan: 0 gaps.
 
+## Worker self-observability (v3)
+
+`tf-clickup-worker` v3 closes the gap where the worker returned HTTP 200 even when
+the ClickUp API rejected the token. It now detects auth failures (401/403 or an
+"invalid token" body), writes a de-duplicated `clickup / reauth_required`
+`integration_errors` row, and sets `integration_settings.last_sync_status =
+'reauth_required'`. On the next successful create it self-heals: resolves the
+error, flips status to `connected`, and closes the ClickUp reauth ticket.
+`tf_system_health` reflects an open ClickUp error as **degraded** (not a false
+green), with detail "worker running, ClickUp API auth issue, rotate token".
+
 ## Verified
 
 End-to-end tested: a producer call created a real ClickUp task via the worker and

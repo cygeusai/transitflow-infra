@@ -118,11 +118,29 @@ This is a genuine open edge. It is not currently reachable by the deployment
 paths in use, both this agent and the Lovable agent create tables as `postgres`,
 but it is the mechanism by which this finding would silently return.
 
-**The monitoring gap is the more important half.** Migration 272 hardened the
-grants; nothing yet watches them. A new scanner axis, `tables_truncatable_by_client`,
-belongs in `tf_security_scan` so that this is monitored rather than merely done.
-A control that fixed something once and never looks again is not a control, it is
-a changelog entry. That work is open.
+**The monitoring gap was the more important half, and it is now closed.**
+Migration 272 hardened the grants and nothing watched them. A control that fixed
+something once and never looks again is not a control, it is a changelog entry.
+
+Migration 283, `security_scan_monitors_truncate_grants_and_separates_unreachable_tables_from_unpoliced_ones`,
+added `tables_truncatable_by_client` as the sixth declared axis of
+`tf_security_scan()`. It reads **0**, with an empty
+`tables_truncatable_by_client_tables`, and it is summed into `gap_total` through
+the declared-axis list rather than a hand-written total, so it cannot be added to
+the declaration and forgotten in the sum. If a future table lands with the
+historical broad ACL, whether through the `supabase_admin` residual below or a
+hand-written grant, the scan counts it and names it.
+
+The mechanism residual above is untouched. Migration 283 monitors the symptom.
+Read `docs/SECURITY_SCAN_INTEGRITY.md` for the axis, the population declaration
+it sits inside, and the `ok: false` refusal ladder that stops the scan reporting
+clean when its own integrity fails.
+
+**Still open:** no control row reads the new axis. `tf_controls_evaluate()` has
+23 controls and none of them consumes `tables_truncatable_by_client` or the
+scan's `integrity_total`. The scan refuses correctly and nothing is listening,
+which is the same shape as the defect migration 269 closed on the control
+consumers. That work is open.
 
 ---
 
@@ -206,5 +224,8 @@ select pg_get_userbyid(defaclrole) as owner, defaclobjtype, defaclacl
   and the `PUBLIC` twin gotcha that makes revoking `anon` alone insufficient
 - `docs/REGISTER_INTEGRITY.md` — the registers that record intent, and what
   happens when they are seeded from the checker that reads them
+- `docs/SECURITY_SCAN_INTEGRITY.md` — the `tables_truncatable_by_client` axis
+  that monitors this hardening, and the population declaration that makes a
+  zero-gap report mean something
 - `docs/PLATFORM_KNOWLEDGE_BASE.md` — conventions 27 and 28, house rule 14, and
   the Pass 9 verification log

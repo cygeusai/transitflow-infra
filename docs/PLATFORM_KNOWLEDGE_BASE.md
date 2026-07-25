@@ -4,10 +4,10 @@ The single troubleshooting reference for the Transit & Flow backend. Written to
 be read at 2am by someone who did not build it.
 
 State captured 2026-07-25 against Supabase project `kjooyhvynkzuvsixsutt` at
-migration 276. Every number in this document was read out of the live database,
+migration 283. Every number in this document was read out of the live database,
 not remembered.
 
-Migrations 270 through 277 were applied by **two agents interleaved into one
+Migrations 270 through 279 were applied by **two agents interleaved into one
 version stream**, so ordinals in that range are not contiguous per author. Cite
 migrations by name. See the note at the head of `MIGRATIONS_INDEX.md`.
 
@@ -198,6 +198,15 @@ Routed by what you observe. Each row names the check to run first.
 | `tf_grant_tier_audit` reports `missing_total` above 0 with rows that look correct | a register row was hand-written with the bare type list (`'integer'`) instead of the identity-argument string (`'p_days integer'`), so it resolves to no function and applies no ACL | `select proname, ident_args from tf_function_grant_tiers t where not exists (select 1 from pg_proc p where p.pronamespace='public'::regnamespace and p.proname=t.proname and pg_get_function_identity_arguments(p.oid)=t.ident_args)`. Since migration 276 the table canonicalises or refuses these |
 | A definer function returns aggregate counts over a table the caller cannot `SELECT` | aggregation is not anonymisation; a `SECURITY DEFINER` function over a policy-gated table bypasses that gate unless it re-asserts it in its own body | read `pg_get_functiondef`, confirm the guard idiom is present; see migration 274 and `tf_studio_funnel` |
 | A migration asserting an end-state rolls back for no apparent reason | a concurrent agent deployed to production mid-transaction and the population grew | assert deltas measured inside the transaction, never absolute counts pinned earlier; report concurrent arrivals by `raise notice`. See the head of `MIGRATIONS_INDEX.md` |
+| `tf_security_scan()` raises `empty population (tables 0, security definer functions 0)` | the scan cannot see its own subject, usually a `search_path` problem or a role that cannot read `pg_proc` the way the definer owner can | the raise is deliberate. A scan over nothing returns zero gaps and that is not the same as clean. Check `current_setting('search_path')` and the function owner before assuming the catalog is empty |
+| `tf_security_scan()` returns `ok: false` with `stale_exemptions_present` | one or more rows in `security_scan_exemptions` name a function that is not currently reachable-and-unguarded, so the exemption suppresses nothing and will hide the finding the day the guard is removed | read `stale_exemptions` for the names, confirm each function is guarded or gone, then delete the rows. Never add a guard-removal to make the exemption "real" |
+| `tf_security_scan()` returns `ok: false` with `every_reachable_definer_function_exempted` | the exemption lever has been pulled to its limit; the guard axis reads zero because the denominator is zero | `population.unexempt_reachable` is 0. This is the limit case of the migration 265-267 finding and the scan now refuses rather than reporting clean |
+| `tf_security_scan()` returns `ok: false` with `guard_scan_partition_mismatch` | the exempt and unexempt counts do not sum to the reachable total, or the unguarded count exceeds the unexempt set | the three counts come from one `with reach as (...)` CTE, so a mismatch means the deployed body predates migration 280 or was patched inconsistently. Re-read `pg_get_functiondef('public.tf_security_scan'::regproc)` |
+| `tf_security_scan()` returns `ok: false` with `rls_no_policy_partition_mismatch` | `rls_enabled_no_policy_reachable` exceeds `rls_enabled_no_policy`, which is arithmetically impossible for a subset | the reachable predicate and the superset predicate have diverged; both must filter on `relrowsecurity` and absent `pg_policies` rows. See migration 283 |
+| `rls_enabled_no_policy` is non-zero but the named table looks correctly built | the table has RLS on and no policies **and no client-role grants at all**, which is correct construction, not a gap | since migration 283 read `rls_enabled_no_policy_reachable` instead. Unreachable is not unpoliced. `studio_events_prelaunch_archive` is the worked example |
+| `insert into security_scan_exemptions` raises `A standing exemption over a guarded function is a trap` | the target already carries a recognised guard predicate, so the exemption would suppress nothing today and hide the finding tomorrow | do not exempt it. If the guard is wrong, fix the guard. See convention 30 |
+| `insert into security_scan_exemptions` raises `A one line reason is not a review` | the `reason` is under 40 characters | write the review: what the function exposes, why that is acceptable, and what was checked. The length floor is a proxy for the thinking, not the point of it |
+| A new `SECURITY DEFINER` function shows up in `secdef_authenticated_no_guard` moments after deployment | the grant tier was applied in a later migration than the create, so the function sat in the creation exposure window | house rule fifteen. Apply `tf_apply_grant_tier` in the same transaction as `CREATE FUNCTION` |
 | A table is emptied and no RLS policy could have allowed it | `TRUNCATE` does not visit rows, so no policy constrains it | `select count(*) from pg_class c where c.relnamespace='public'::regnamespace and c.relkind='r' and has_table_privilege('authenticated', c.oid, 'TRUNCATE')`, expect 0 since migration 272 |
 
 ---
@@ -662,7 +671,9 @@ time.
 | 25 | An exclusion lever must be visible in the number it shrinks, and a stale exclusion is a violation | a checker that supports exclusions publishes the full population, the excluded count and the excluded names, asserts the partition `population = measured + excluded` in its own body, and treats an exclusion naming nothing real as a violation rather than a curiosity | `tf_guard_detection_audit` `reachable_total` / `exempted_total` / `exempted_fns` / `stale_exemption_total`, gating since migration 265, surfaced on `AC-GUARDREG-023` since migration 267, proved by a planted stale exemption |
 | 26 | A refusal must cover every input the checker reads, and every consumer of a refusal must listen to it | a checker's completeness guard names all of its own inputs and says which are missing; on the consuming side, a payload carrying `ok: false` becomes null, never zero, so the control reads `attention` rather than `passing` | `tf_function_safety_audit` `missing_signals` across all five signal classes since migration 268; all six consumers in `tf_controls_evaluate` gated on `coalesce(payload->>'ok','false') <> 'true'` since migration 269, verified by a count of the idiom in the patched body |
 | 27 | A table a checker reads must refuse to hold a row the checker cannot verify | the register carries a `BEFORE INSERT OR UPDATE` validator that resolves every row against the live catalog, refuses what cannot exist, and canonicalises what is unambiguously mis-keyed rather than accepting it silently; validators are `SECURITY INVOKER` so hardening one control does not widen another's surface | `tf_function_registry_validate` and `tf_grant_tier_registry_validate` since migration 276, proved by four inductions each asserting the refusal fired **and** fired for the right reason, the fourth replaying a real mis-keyed production row |
-| 28 | A privilege that no policy can constrain is not covered by the policy layer | privileges outside the RLS-evaluated set (`TRUNCATE`, `TRIGGER`, `REFERENCES`, `MAINTAIN`) are revoked from `anon` and `authenticated` on every table, leaving only the four verbs PostgREST uses; unreachability through the current front door is not a reason to hold a privilege | migration 272, live count of tables `TRUNCATE`-able by a client role is 0 of 173, was 172; the scanner axis that would monitor it is open work, see `LEAST_PRIVILEGE_TABLE_GRANTS.md` |
+| 28 | A privilege that no policy can constrain is not covered by the policy layer | privileges outside the RLS-evaluated set (`TRUNCATE`, `TRIGGER`, `REFERENCES`, `MAINTAIN`) are revoked from `anon` and `authenticated` on every table, leaving only the four verbs PostgREST uses; unreachability through the current front door is not a reason to hold a privilege | migration 272, live count of tables `TRUNCATE`-able by a client role is 0 of 174, was 172 of 173; monitored since migration 283 by the `tables_truncatable_by_client` axis of `tf_security_scan`, see `LEAST_PRIVILEGE_TABLE_GRANTS.md` and `SECURITY_SCAN_INTEGRITY.md` |
+| 29 | A checker must publish the population it counted over | every gap count is accompanied by the denominator that produced it, and a checker whose population comes back empty raises rather than returning zero; the declared axis list and the computed axis object are coupled by an assertion so an axis cannot be declared and left out of the total, nor computed and left out of the declaration | `tf_security_scan()` `population` block and empty-population raise since migration 280; `gap_total` derived by iterating `v_axis_order` rather than summing named variables; the same shape already in `tf_grant_tier_audit` and `tf_guard_detection_audit` |
+| 30 | An exemption must suppress something, or it is a trap | a standing exemption over a function that is already guarded hides the finding the day the guard is removed; staleness is detected by the exact inverse of the axis predicate, published as its own count, escalated into `ok: false`, and refused at write time by a validating trigger that also requires a reason long enough to be a review | `tf_security_scan()` `stale_exemptions` and the `stale_exemptions_present` integrity error since migration 280; two live rows retired by migration 281; `tf_security_scan_exemption_validate` since migration 282, proved by three inductions |
 
 The countermeasure that keeps working is the same every time: express the
 convention in the database, on the *normalised* form of the value, so violation
@@ -686,6 +697,48 @@ inspected, queried, and extended by an operator at 2am.
 ## Defect-pattern library
 
 The recurring shapes. Recognising one of these saves an hour.
+
+**The undeclared denominator.** A checker publishes a count of findings and never
+says what it counted over. Zero findings over an empty population is byte-identical
+to zero findings over a hardened one, so the payload cannot distinguish "clean"
+from "blind". This was `tf_security_scan` for its entire life until migration 280.
+Fix: publish a `population` object next to the counts, and raise rather than
+return zero when the population is empty. The shape generalises. Any number that
+is a numerator needs its denominator in the same payload.
+
+**The exemption that suppresses nothing.** A row is added to a suppression list
+for a target that is not currently firing. It looks redundant and harmless. It is
+neither: it is a standing instruction to stop looking, and it activates the moment
+the underlying protection is removed, at which point it is the only thing left and
+the checker reports clean. Found live when a concurrent agent exempted two
+functions ten minutes after they had already been guarded. Fix: detect staleness
+with the exact inverse of the axis predicate, escalate it into `ok: false`, and
+refuse the write at the register. Detection alone is not enough, because the row
+that suppresses nothing today is written by someone who has not read this.
+
+**The creation exposure window.** A `SECURITY DEFINER` function is executable by
+`anon` and `authenticated` between `CREATE FUNCTION` and `tf_apply_grant_tier`,
+because Postgres grants `EXECUTE` to `PUBLIC` on creation and Supabase default
+privileges add the two client roles. Inside one transaction this is invisible and
+harmless. Split across two migrations it is a real, live, unguarded definer
+function for however long the gap lasts. Proved at both ends in migration 282.
+Fix: house rule fifteen, tier in the same migration as the create.
+
+**The same-transaction measurement trap.** A migration's `DO` block measures a
+catalog population "before" and "after" some work, but the `CREATE FUNCTION` it is
+measuring ran earlier in the same transaction, so both readings already include
+it. The assertion "population grew by one" then fails against an unchanged count
+and looks like a defect in the catalog. Fix: assert what the block itself changes.
+A register write moves no catalog population, so assert zero movement plus the
+row's presence by name.
+
+**Unreachable read as unpoliced.** A table with RLS enabled and zero policies
+looks like a gap. If no client role holds any of `SELECT`, `INSERT`, `UPDATE` or
+`DELETE` on it, it is correctly built and needs no policy. Counting the two cases
+together produces a permanent non-zero gap that operators learn to ignore, which
+is worse than not measuring it. Fix: decompose, never narrow. Keep the original
+count for existing consumers and publish the client-reachable subset alongside it,
+with a partition assertion between them.
 
 **Guard arity.** A function calls `user_is_internal_staff()` with no argument.
 Raises `42883`. Nothing catches it until the function is actually invoked, and
@@ -1113,7 +1166,29 @@ because the first cannot be enforced against an agent that has SQL access.
 
 ## The house rules
 
-Fourteen rules, each of which exists because breaking it cost real time.
+Sixteen rules, each of which exists because breaking it cost real time.
+
+**Fifteen. Apply the grant tier in the same migration that creates the function,
+never in a follow-up.** Proven by assertion in migration 282. Postgres grants
+`EXECUTE` to `PUBLIC` on every newly created function and Supabase's
+`ALTER DEFAULT PRIVILEGES` adds `anon` and `authenticated` on top, so a
+`SECURITY DEFINER` function is a reachable, unguarded definer function from the
+instant `CREATE FUNCTION` returns until `tf_apply_grant_tier` runs.
+`has_function_privilege('authenticated', oid, 'EXECUTE')` reads **true**
+immediately after the create and **false** after the tier, and the guard axis
+falls by exactly one across those two statements. Inside one transaction the
+window is not exploitable. Split across two migrations it is a live exposure for
+however long the second one takes to write.
+
+**Sixteen. When your own assertion fails, ask whether it found something before
+assuming it is wrong.** Migration 282 asserted that adding a validator which
+changes no grant and no guard could not move the guard axis. It failed with
+`guard axis moved 1 to 0`. The assertion was correct and the model behind it was
+incomplete: house rule fifteen above exists only because that failure was
+investigated rather than relaxed. Relaxing a failing assertion converts a finding
+into a blind spot, and it does it silently, which is the worst combination this
+document knows of. The correct move is to encode the discovery as the new
+assertion so the property is re-proved on every replay.
 
 **A migration that creates or replaces a function must drive that function in a
 post-check, not inspect it.** Migration 229 in this repo's ordinal series applied
@@ -2288,6 +2363,66 @@ created rather than closed: a `tables_truncatable_by_client` axis so migration
 272 is monitored and not merely done, a freshness gate on `it_controls.status`
 which remains a cache with no staleness concept, and the deployment-coordination
 decision above.
+
+**Pass 10, 2026-07-25, at migration 283.** Pass 9 ended by naming
+`tf_security_scan` as fully drafted and unapplied. Pass 10 applied it and then
+kept going, because the rebuild immediately produced two findings that the old
+body could not have surfaced. Ordinals 280 through 283 are contiguous only
+because the concurrent agent happened not to deploy during the window. That is
+luck, not coordination, and the governance ticket remains open.
+
+| Claim carried into this pass | What the catalog said | Resolution |
+| --- | --- | --- |
+| `tf_security_scan()` reporting `gap_total 1` means the platform is one gap from clean | the payload contained no statement of what had been counted. A scan over an empty population returns the same `gap_total 0` as a perfectly hardened one, and every control and dashboard on the platform reads this function | migration 280 publishes a seven-field `population` block, raises on an empty population, couples the declared axis list to the computed axis object, and derives `gap_total` by iterating the declaration. All twelve legacy keys preserved, eight added |
+| The three exemptions in `security_scan_exemptions` are the three deliberate ones | five rows were present. The concurrent agent had exempted `tf_studio_funnel` and `tf_studio_quality_gates` at 14:45:50, ten minutes **after** migration 274 had already guarded both at 14:35:27 | migration 281 retired both, asserting that removing an exemption which suppresses nothing cannot move the guard axis. It did not move. Back to the three deliberate rows |
+| Retiring the two bad rows closes it | nothing prevented the next one. The rows were written in good faith by an author who could not have known the functions were already guarded | migration 282 attached `tf_security_scan_exemption_validate`, refusing six classes of bad row including the already-guarded case and a `reason` under 40 characters, proved by three inductions each requiring its specific refusal marker |
+| Adding a validator that changes no grant and no guard cannot move the guard axis | it moved 1 to 0. A brand-new `SECURITY DEFINER` function is executable by `authenticated` from `CREATE FUNCTION` until `tf_apply_grant_tier`, through the Supabase default privileges layered on the Postgres `PUBLIC` grant | the finding was encoded as the assertion rather than the assertion relaxed. Migration 282 now proves `has_function_privilege` true before the tier and false after, and the axis falling by exactly one, on every replay. House rules fifteen and sixteen |
+| Migration 272 hardened the `TRUNCATE` grants, so that finding is closed | nothing watched them. The `supabase_admin` default-ACL residual is the mechanism by which the finding silently returns, and no axis would have seen it | migration 283 added `tables_truncatable_by_client` as the sixth declared axis. Reads 0, names the offenders when non-zero. `LEAST_PRIVILEGE_TABLE_GRANTS.md` closed its own open item |
+| `rls_enabled_no_policy 1` is a real gap | `studio_events_prelaunch_archive` has RLS on, zero policies, and **no `anon` or `authenticated` grants of any kind**. It is correctly built. The axis could not distinguish unreachable from unpoliced | migration 283 decomposed rather than narrowed. The original key still reads 1 for existing consumers; `rls_enabled_no_policy_reachable` reads 0, with `rls_no_policy_partition_mismatch` guarding the subset relation |
+
+| Verified at the start of this pass | Verified at the end | What was re-read |
+| --- | --- | --- |
+| Migrations 279, conventions 28, house rules 14, axes 5 | 283 / 30 / 16 / 6 | inventory, conventions register, house rules, defect-pattern library, symptoms table, `LEAST_PRIVILEGE_TABLE_GRANTS.md`, and a new `SECURITY_SCAN_INTEGRITY.md` |
+
+Live state at 15:10:42Z: `tf_security_scan()` `ok true`, `integrity_total 0`,
+`errors []`, `gap_total 2`, `secdef_authenticated_no_guard 0`,
+`tables_truncatable_by_client 0`, `rls_enabled_no_policy_reachable 0`,
+`stale_exemption_total 0`, population 174 tables and 120 definer functions with
+60 reachable by `authenticated`, 3 exempt and 57 unexempt.
+`tf_grant_tier_audit()` `ok true` at 100% coverage over 92 functions with zero
+violations, zero missing, zero uncovered and zero drift.
+`tf_function_safety_audit()` 92 functions, 31 reads, 61 writers, 6 trigger
+writers. `tf_controls_evaluate()` 23 controls, 19 passing, 3 attention, 1
+failing, 6 manual and all 6 never attested.
+
+Two results from this pass change how future work should be checked rather than
+closing a specific hole.
+
+The first is that **a suppression mechanism needs a staleness concept from the
+day it is created**. The exemption list was added in migration 265 to give the
+guard axis a legitimate escape hatch, with a counter so the lever was visible.
+That was correct and insufficient. Visibility told you how many rows existed, not
+whether any of them still did anything. The general form: any list that tells a
+checker to stop looking must itself be checked for entries that are no longer
+looking at anything, and the check must be the exact inverse of the predicate it
+suppresses, or the two will drift and the inverse will stop being an inverse.
+
+The second is that **the three unclosed items from pass 9 are now two, and the
+remaining two are both about listening rather than detecting**. `tf_controls_evaluate`
+has 23 control rows and not one of them reads `tables_truncatable_by_client` or
+`tf_security_scan`'s `integrity_total`. The scan refuses correctly, publishes the
+refusal, and nothing consumes it. That is precisely the shape migration 269
+closed on the other five consumers, reappearing on a new axis within a day,
+which suggests the wiring step needs to be part of the axis-adding procedure
+rather than a follow-up. Alongside it, `it_controls.status` is still a cache with
+no freshness gate, so the board can render a stale evaluation as authoritative.
+
+The sweep resumes there: wire `CM-TRUNCGRANT` and `CM-SCANINTEG` control rows
+onto the two unread signals, then put a staleness threshold on
+`it_controls.evaluated_at` and refuse to render past it. Behind those sits the
+deployment-coordination decision, ClickUp `86bb3etah`, which pass 9 named the
+largest unmitigated governance risk in the backend and which pass 10 did nothing
+to reduce.
 
 ---
 

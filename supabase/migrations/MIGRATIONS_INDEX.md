@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (277 migrations
+The full, ordered migration history of the Transit & Flow backend (283 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -160,6 +160,12 @@ of what exists so nothing is silently dropped.
 | 275 | 20260725143849 | safety_audit_classifies_returns_trigger_functions_as_write_paths |
 | 276 | 20260725144112 | registers_validate_their_own_rows_against_the_catalog |
 | 277 | 20260725144141 | studio_founding_anon_insert_grant *(concurrent agent)* |
+| 278 | 20260725144550 | studio_reporting_security_exemptions *(concurrent agent, both rows retired by 281)* |
+| 279 | 20260725145159 | studio_events_prelaunch_baseline_reset *(concurrent agent)* |
+| 280 | 20260725150224 | security_scan_declares_its_population_and_refuses_to_report_clean_on_integrity_failure |
+| 281 | 20260725150253 | retire_security_scan_exemptions_that_suppress_nothing |
+| 282 | 20260725150606 | security_scan_exemptions_refuse_rows_that_suppress_nothing |
+| 283 | 20260725150711 | security_scan_monitors_truncate_grants_and_separates_unreachable_tables_from_unpoliced_ones |
 
 > **Migrations 270 through 277 were applied by two agents interleaved into one
 > version stream, and that is itself the finding.** Four of these eight (270,
@@ -406,6 +412,21 @@ of what exists so nothing is silently dropped.
 > The reasoning, the measured exposure, the decision not to demote grants, both
 > induced-failure proofs and the operator runbook are in
 > [`docs/FUNCTION_GRANT_TIERS.md`](../../docs/FUNCTION_GRANT_TIERS.md).
+
+> **Migrations 280 through 283 are one change**, split into four so each
+> property could be asserted before the next was applied. 280 rebuilds
+> `tf_security_scan` in plpgsql, preserving all twelve legacy keys and adding a
+> `population` block, an axis-coupling raise, and an `ok: false` refusal ladder.
+> 281 retires two exemptions that suppressed nothing, asserting the guard axis
+> cannot move when they are removed. 282 attaches a validating trigger so no
+> such exemption can be written again, and proves **the creation exposure
+> window** at both ends: a `SECURITY DEFINER` function is executable by
+> `authenticated` from `CREATE FUNCTION` until `tf_apply_grant_tier` runs. 283
+> adds the sixth axis `tables_truncatable_by_client`, closing the monitoring gap
+> migration 272 left open, and decomposes `rls_enabled_no_policy` so a table no
+> client role can reach is no longer counted the same as one that is genuinely
+> unpoliced. The reasoning, the assertions and the runbook are in
+> [`docs/SECURITY_SCAN_INTEGRITY.md`](../../docs/SECURITY_SCAN_INTEGRITY.md).
 
 > **Migrations 253 through 257 are one change**, split into five so each half of
 > the work could be asserted before the next was applied. They move guard

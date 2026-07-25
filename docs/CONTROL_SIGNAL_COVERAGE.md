@@ -458,10 +458,16 @@ select control_key, status, last_evaluated_at, left(evidence, 120)
 
 ## Open items
 
-- **`it_controls.status` is a cache with no freshness gate.** The board can
-  render a stale evaluation as authoritative. Publish `evaluated_at` staleness
-  and refuse to render past a threshold. This is now the oldest untouched item
-  in the security-scan chain.
+- ~~**`it_controls.status` is a cache with no freshness gate.**~~ **Closed by
+  migrations 288 through 290.** `tf_controls_board()` publishes the register's
+  age against a 792-hour threshold derived from the monthly cadence, and
+  `CM-BOARDFRESH-027` renders it. The obvious implementation was wrong and the
+  catalog said so before it was built: `last_evaluated_at` is a **write**
+  timestamp, so an unscored control is stamped as fresh as a scored one. The
+  board therefore parses the evaluator's catalog text instead, which surfaced a
+  second and larger defect, a control whose status branch asserted `'passing'`
+  rather than computing it. See
+  [`CONTROL_BOARD_FRESHNESS.md`](./CONTROL_BOARD_FRESHNESS.md).
 - **Coverage is measured over `tf_security_scan` only.** `tf_grant_tier_audit`,
   `tf_function_safety_audit`, `tf_guard_detection_audit` and
   `tf_automation_note_drift` do not publish machine-readable axis lists, so
@@ -486,10 +492,13 @@ select control_key, status, last_evaluated_at, left(evidence, 120)
   the consumer to hear
 - `docs/LEAST_PRIVILEGE_TABLE_GRANTS.md` — migration 272, whose hardening
   `CM-TRUNCGRANT-024` now watches
-- `docs/IT_GOVERNANCE_GRC.md` — the control register, now 26 rows
+- `docs/CONTROL_BOARD_FRESHNESS.md` — migrations 288 through 290, which close
+  this document's freshness item and add the two axes that ask whether a control
+  is genuinely scored at all
+- `docs/IT_GOVERNANCE_GRC.md` — the control register, now 27 rows
 - `docs/REGISTER_INTEGRITY.md` — why the coverage checker reads the catalog
   rather than a register
 - `docs/FUNCTION_GRANT_TIERS.md` — `tf_apply_grant_tier` and the creation
   exposure window
 - `docs/PLATFORM_KNOWLEDGE_BASE.md` — conventions, house rules and the Pass 11
-  verification log
+  and Pass 12 verification logs

@@ -52,6 +52,8 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 
 - [`CONTROL_SIGNAL_COVERAGE.md`](./CONTROL_SIGNAL_COVERAGE.md) — **detection without consumption is not a control.** A checker that finds something and publishes it has done nothing at all unless something downstream turns that publication into a status a human acts on. Migration 283 added a sixth detection axis and nothing read it; worse, `tf_controls_evaluate` had never honoured `tf_security_scan`'s `ok` flag because that flag landed in migration 280, after the migration 269 consumer sweep, so three security controls could render `passing` against a scan that had declared itself untrustworthy. Migrations 284 through 287 wire `CM-TRUNCGRANT-024`, `CM-SCANINTEG-025` and `CM-SIGNALCOV-026`, correct the `AC-RLS-001` false positive by weighing the reachable subset while keeping both numbers in evidence, and escalate from the instances to the class with `tf_controls_signal_coverage()`, which matches the scan's declared axis list against the **catalog definition** of its consumer rather than a register. Also: **the three obligations of creating a `tf_*` function**, **house rule seventeen** (assert the register's aggregate state, not the row you changed), and **the prefix-collision gotcha** that makes a bare substring match report a short axis name as read when only its longer sibling is referenced
 
+- [`CONTROL_BOARD_FRESHNESS.md`](./CONTROL_BOARD_FRESHNESS.md) — **a control register is a cache of judgements, and a cache with no date on it is not evidence, it is decoration.** `it_controls.status` had no staleness concept, so the board could render an evaluation from any point in the past as current. Migrations 288 through 290 build `tf_controls_board()`, which publishes the register's age against the monthly cadence, names every automated control the evaluator has no status branch for, names every branch that **asserts** a status literal instead of computing one, and folds all three into one boolean, `authoritative`, read by `CM-BOARDFRESH-027`. Contains: **the write-timestamp trap** that killed the first design before a line was written (`last_evaluated_at` records when a row was written, not when it was judged, because the evaluator stamps every automated row from one `UPDATE` whose status CASE ends `else status end`, so `count(distinct last_evaluated_at)` reads 1 and a lag-based detector reports zero forever); **the tautological control** the second axis found on its first run, `when 'GV-CCM-016' then 'passing'`, where the control certifying continuous controls monitoring was a hardcoded constant that could never fail and carried the timestamp of its own write as evidence, left deliberately unfixed for one migration so the history records the machine finding it; **the self-stamping signal** (a freshness control must read the board before the evaluator's `UPDATE` or it scores its own write); and **the asserted textual splice**, the discipline for patching a large function through `pg_get_functiondef`
+
 ## Interactive artifacts (this folder)
 Self-contained HTML. Open directly in a browser, no build step, no network.
 - [`COMMAND_CENTER.html`](./COMMAND_CENTER.html) — executive command center
@@ -82,6 +84,18 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
 - A migration that touches the control register asserts the register's
   **aggregate** state before it commits. A per-row assertion cannot see a
   cross-control regression.
+- A control's status branch must **compute** a status, never assert one. A branch
+  that reads `then 'passing'` is not a judgement, it is a decoration that
+  survives every failure it exists to detect.
+- A signal must not be produced by the act of evaluating it. A freshness reading
+  taken after the write it measures is always zero. Read the prior state first,
+  then stamp.
+- A stored status is a cache. Publish its age beside it, against a stated
+  threshold, or a reader cannot tell a current judgement from an abandoned one.
+- Patching a function through `pg_get_functiondef` and `replace` is legitimate
+  only when every anchor is first asserted to occur **exactly once**. An anchor
+  matching zero or two places must refuse the whole migration, not splice
+  silently.
 - The database is the source of truth for access control (RLS).
 - Documents are generated from `document_templates` + shortcodes, not hard-coded.
 - Finance truth comes from QuickBooks; PM income/expense from the lease ledger.

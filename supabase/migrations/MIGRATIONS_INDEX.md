@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (287 migrations
+The full, ordered migration history of the Transit & Flow backend (290 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -170,6 +170,9 @@ of what exists so nothing is silently dropped.
 | 285 | 20260725152534 | detect_the_axis_that_nobody_reads |
 | 286 | 20260725152754 | declare_the_signal_coverage_reader_in_the_function_registry |
 | 287 | 20260725152915 | the_unread_axis_detector_is_itself_read |
+| 288 | 20260725154849 | control_board_publishes_its_own_freshness_and_names_the_rows_the_evaluator_never_scores |
+| 289 | 20260725155210 | the_control_board_detects_a_branch_that_asserts_a_pass_instead_of_computing_one |
+| 290 | 20260725155435 | continuous_monitoring_stops_asserting_itself_and_the_board_freshness_control_is_wired |
 
 > **Migrations 270 through 277 were applied by two agents interleaved into one
 > version stream, and that is itself the finding.** Four of these eight (270,
@@ -431,6 +434,46 @@ of what exists so nothing is silently dropped.
 > client role can reach is no longer counted the same as one that is genuinely
 > unpoliced. The reasoning, the assertions and the runbook are in
 > [`docs/SECURITY_SCAN_INTEGRITY.md`](../../docs/SECURITY_SCAN_INTEGRITY.md).
+
+> **Migrations 288 through 290 are one change**, split into three because the
+> middle one found something the batch was not looking for and shipping the
+> detector before the fix is what makes the finding credible. 288 builds
+> `tf_controls_board()`, the first thing in the system that knows how old the
+> control register is. `it_controls.status` had been a cache of judgements with
+> no staleness concept, so the board could render an evaluation from any point in
+> the past as current. The **first design for the unscored-row detector was
+> disproved by the catalog before any code was written**: it assumed a row whose
+> `last_evaluated_at` lags the maximum is a row the evaluator skipped, but
+> `tf_controls_evaluate` writes every automated row in one `UPDATE` sharing one
+> `v_now` and its status CASE ends `else status end`, so an unscored row keeps
+> its old status **and is stamped fresh anyway**.
+> `count(distinct last_evaluated_at)` reads 1, and the detector would have
+> reported zero forever. That is **the write-timestamp trap**:
+> `last_evaluated_at` records when a row was written, never when it was judged.
+> The replacement parses the evaluator's own `pg_get_functiondef` and names
+> automated controls with no `when` branch. 289 adds a second axis to the same
+> reader, `tautological_total`, which names branches that **assert** a status
+> literal rather than compute one, and it immediately found
+> `when 'GV-CCM-016' then 'passing'`: the control certifying continuous controls
+> monitoring was a hardcoded constant that could never fail, carrying as evidence
+> the timestamp of its own write. **289 deliberately did not fix it**, so the
+> finding exists in the history as something the machine found rather than
+> something the author fixed quietly while adding the check that would have
+> caught it. 290 fixes `GV-CCM-016` to compute from live `cron.job` state and
+> wires `CM-BOARDFRESH-027` over `authoritative`. Two techniques from this batch
+> are reusable. **The self-stamping signal**: a freshness control must read the
+> board before the evaluator's `UPDATE`, or it scores its own write and reads
+> zero hours old every time, so 290 hoists the `tf_controls_board()` call to the
+> top of `tf_controls_evaluate` and holds the result. **The asserted textual
+> splice**: patching a large function via `pg_get_functiondef` plus `replace` is
+> legitimate only if every anchor is first asserted to occur exactly once, via
+> `(length(v_new) - length(replace(v_new, a, ''))) / length(a)`, refusing the
+> whole migration otherwise. 290 used five such anchors. The register moved 26
+> controls to **27 with 0 failing**, and now publishes one boolean,
+> `authoritative`, that is false if the board is stale, if any automated control
+> is unscored, or if any status is asserted. The full narrative, the discarded
+> design, the refusal table and the runbook are in
+> [`docs/CONTROL_BOARD_FRESHNESS.md`](../../docs/CONTROL_BOARD_FRESHNESS.md).
 
 > **Migrations 284 through 287 are one change**, split into four because the
 > third of them exists only because the second one's assertion refused. 284

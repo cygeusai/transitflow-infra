@@ -4,7 +4,7 @@ The single troubleshooting reference for the Transit & Flow backend. Written to
 be read at 2am by someone who did not build it.
 
 State captured 2026-07-25 against Supabase project `kjooyhvynkzuvsixsutt` at
-migration 287. Every number in this document was read out of the live database,
+migration 290. Every number in this document was read out of the live database,
 not remembered.
 
 Migrations 270 through 279 were applied by **two agents interleaved into one
@@ -213,6 +213,15 @@ Routed by what you observe. Each row names the check to run first.
 | `tf_controls_signal_coverage()` returns `refusal_flag_honoured: false` | `tf_controls_evaluate` reads `tf_security_scan` without gating on the scan's `ok` flag, so a refusing scan renders as `passing` | re-read `pg_get_functiondef('public.tf_controls_evaluate'::regproc)` and confirm the `coalesce(v_scan_raw->>'ok','false') <> 'true'` gate is present. This is the migration 284 finding; convention 26 |
 | `tf_controls_signal_coverage()` returns `ok: false` with `scan_published_no_axis_list` or `axis_list_empty` | the deployed `tf_security_scan` body predates migration 280 or its `axes` array is empty, so coverage cannot be measured over anything | the checker refuses rather than reporting zero unread axes over zero axes. Same undeclared-denominator logic as convention 29, applied to itself |
 | `tf_controls_signal_coverage()` returns `ok: false` with `consumer_not_found` | `tf_controls_evaluate` is absent from `pg_proc`, or is not `prokind = 'f'` | the coverage checker resolves its consumer by catalog lookup, not by name string. If this fires, the evaluator has been dropped and the whole control board is dark |
+| `tf_controls_board()` returns `authoritative: false` while every control reads `passing` | the board is stale, or an automated control is unscored, or a status branch asserts a literal; any one of the three drops the boolean and a green board proves none of them | read `board_age_hours` against `threshold_hours`, then `unscored_controls` and `tautological_controls`, which name the rows. `CM-BOARDFRESH-027` carries the same three numbers in its evidence. Conventions 34 and 35 |
+| `tf_controls_board()` returns `ok: false` with `status_case_marker_not_found` | `tf_controls_evaluate` was reformatted and the reader can no longer locate `status = case control_key` or `else status end` in its catalog text | fix the reader in a migration. **Do not** trust a zero from a parser that cannot see its subject. The refusal exists precisely so a reformat cannot silently turn the detector into a source of green |
+| `tf_controls_board()` returns `ok: false` with `never_evaluated` | no automated control carries a `last_evaluated_at`, so there is no age to publish | run `select public.tf_controls_evaluate();`. If the register was just seeded this is expected once and only once |
+| `tf_controls_board()` returns `ok: false` with `empty_register` | there are no automated controls for this company | the register was truncated or the `company_id` is wrong. A board with no rows is not a clean board, which is why this refuses rather than reporting zero gaps. Convention 29 applied to the register |
+| `tf_controls_board()` returns `ok: false` with `evaluator_not_found` | `tf_controls_evaluate` is missing from the catalog | restore it. Nothing is scoring the board, and every status in `it_controls` is a frozen cache of the last run before it disappeared |
+| `board_age_hours` reads 0 every single time no matter when you look | the reading was taken after the write it measures, so it is scoring its own stamp | house rule eighteen, second half. `tf_controls_evaluate` must call `tf_controls_board()` before its `UPDATE`, not after. Confirm the call sits above the update in `pg_get_functiondef` |
+| A control has read `passing` for months and nothing has ever moved it | its status branch may assert a literal rather than compute one, the `GV-CCM-016` defect | `select public.tf_controls_board()` and read `tautological_controls`. A branch of the form `when 'KEY' then 'passing'` is a decoration, not a judgement. Convention 35 |
+| A migration raises `... anchor occurred 0 time(s), expected 1; refusing to patch` | a textual splice into a function body could not find its anchor, usually because the deployed body differs from the one the migration was written against | this is the refusal working. Re-read `pg_get_functiondef` of the target, confirm the exact bytes with `encode(convert_to(substring(...), 'UTF8'), 'escape')`, and rewrite the anchor. Never relax the count check to `>= 1` |
+| A migration raises `... anchor occurred 2 time(s), expected 1; refusing to patch` | the anchor text is ambiguous and `replace` would have patched both sites | narrow the anchor by including surrounding whitespace or an adjacent line until it is unique. A splice that lands twice is worse than one that lands nowhere, because it commits |
 | A coverage check reports an axis as read when nothing reads it | the axis name is a strict prefix of a sibling axis, which convention 21 guarantees will keep occurring, and the match was against the bare identifier | match the axis name wrapped in single quotes so the needle is the SQL literal. **The prefix-collision gotcha** |
 
 ---
@@ -684,6 +693,9 @@ time.
 | 31 | Every declared detection axis has a consumer that renders it | detection without consumption is not a control, it is a log line; the axis list a checker publishes is matched against the **catalog definition** of its consumer, not against a register, and any axis nobody renders is a gap that fails a control of its own | `tf_controls_signal_coverage()` since migration 285, read by `CM-SIGNALCOV-026` since migration 287; live `unread_total 0` over 6 declared axes. The match uses the axis name wrapped in single quotes, because convention 21 creates names that are strict prefixes of one another and a bare substring match reports the short name as read when only the long one is referenced |
 | 32 | A checker that reports on refusals is not gated on its own refusal flag | every other consumer treats `ok: false` as null per convention 26, but the checker whose job is to notice unheard refusals must run and report regardless, or the failure it exists to surface is the failure that silences it | `tf_controls_signal_coverage()` is deliberately ungated on `tf_security_scan`'s `ok` flag and instead publishes `refusal_flag_honoured`, a boolean read out of the consumer's catalog text, plus five distinct refusal codes of its own |
 | 33 | Creating a `tf_*` function carries three obligations in the same migration | apply a grant tier, declare the function in `tf_function_registry`, and wire its signal into a control; only the first is structurally enforced today, the second and third are detected after the fact | tier enforced and asserted since migration 282, detected by `tf_grant_tier_audit` `uncovered_total`; declaration detected by `tf_function_safety_audit` `undeclared_total`, which is what rolled migration 287's first attempt back; signal wiring detected by `tf_controls_signal_coverage` for scan axes only |
+| 34 | A stored status is a cache, so publish its age beside it against a stated threshold | a register of judgements with no date on it renders an evaluation from any point in the past as current; the age, the threshold and the cadence that produced the threshold are all published so the freshness claim is falsifiable rather than asserted | `tf_controls_board()` `board_age_hours` / `threshold_hours` / `cadence` since migration 288; threshold 792 hours, the `0 14 1 * *` monthly cadence plus a two-day grace; read by `CM-BOARDFRESH-027` since migration 290 |
+| 35 | A control's status branch must compute a status, never assert one | a branch that reads `then 'passing'` survives every failure it exists to detect; the property worth checking was never whether a branch exists but whether it decides anything, so the register is measured on both axes, controls with no branch at all and controls whose branch asserts a literal | `tf_controls_board()` `unscored_total` since migration 288 and `tautological_total` since migration 289, both parsed out of `pg_get_functiondef` of the evaluator; found `GV-CCM-016` hardcoded to `'passing'` on its first run, fixed in migration 290; live 0 and 0 |
+| 36 | A signal must not be produced by the act of evaluating it | a freshness reading taken after the write it measures is always zero, so the prior state is read and held before anything is stamped, and the evidence string states the ordering so a reader can verify it without the source | `tf_controls_evaluate` calls `tf_controls_board()` in its opening statements since migration 290 and the `CM-BOARDFRESH-027` evidence ends *"Age is measured before this run stamps the board"* |
 
 The countermeasure that keeps working is the same every time: express the
 convention in the database, on the *normalised* form of the value, so violation
@@ -707,6 +719,47 @@ inspected, queried, and extended by an operator at 2am.
 ## Defect-pattern library
 
 The recurring shapes. Recognising one of these saves an hour.
+
+**The write-timestamp trap.** A column named for when something was *evaluated*
+records when the row was *written*, and those are the same only if every write
+was preceded by an evaluation. `it_controls.last_evaluated_at` is written by one
+`UPDATE` covering every automated row, sharing one `v_now`. That statement's
+status CASE ends `else status end`, so a control the CASE has no branch for keeps
+its old status and is stamped as freshly as one that was genuinely re-scored.
+`count(distinct last_evaluated_at)` reads **1** across the whole board. A
+detector built on the premise "a row whose stamp lags the maximum was skipped"
+therefore returns zero forever, over a population it never declared. This was
+caught by querying the catalog before writing the detector, and it is the exact
+undeclared-denominator failure convention 29 exists to prevent, aimed at a
+timestamp instead of a count. Fix: measure the property directly. The evaluator's
+own `pg_get_functiondef` names which controls it has branches for, so parse that
+rather than inferring it from side effects.
+
+**The tautological control.** A status branch that **asserts** a literal instead
+of computing one: `when 'GV-CCM-016' then 'passing'`. It renders green on every
+run since the day it was written and will keep doing so through the exact failure
+it was created to detect. The one found here was the control certifying
+continuous controls monitoring, and its evidence string was the timestamp of its
+own write, so it was self-referential on both axes. Same family as the seeded
+register of migration 276 and the unread axis of migration 283: in each, the
+presence of a mechanism was mistaken for the property the mechanism was supposed
+to have. A branch existing is not a branch deciding. Fix, now convention 35:
+regex the evaluator's catalog text for branches matching
+`^'(passing|failing|attention|manual)'` and count them as a gap of their own.
+Whenever a register is scored by a CASE, this shape is possible and nothing but
+an explicit check will find it.
+
+**The self-stamping signal.** A freshness metric computed downstream of the write
+it measures. `CM-BOARDFRESH-027` reports the board's age. Read the board from
+inside the `UPDATE` that stamps it and the age is zero on every run, forever, not
+because the board is fresh but because the reading and the write are the same
+event. The detector is structurally incapable of a non-zero answer, which is a
+strictly worse failure than a wrong answer because nothing about the output looks
+anomalous. Fix: hoist the read above the write, hold the prior state in a
+variable, and state the ordering in the evidence string so a reader can verify it
+without opening the source. Generalises to any metric a component publishes about
+itself: establish whether the measurement can observe a state the act of
+measuring did not create.
 
 **The unread axis.** A checker gains a new detection axis. The axis is computed
 correctly, summed into the total correctly, published correctly, and nothing
@@ -1223,7 +1276,49 @@ because the first cannot be enforced against an agent that has SQL access.
 
 ## The house rules
 
-Seventeen rules, each of which exists because breaking it cost real time.
+Eighteen rules, each of which exists because breaking it cost real time.
+
+**Eighteen. A control's status branch must compute a status, never assert one,
+and a signal must not be produced by the act of evaluating it.** Two halves of
+one rule, both found in `tf_controls_evaluate` while placing an unrelated branch
+in migration 290.
+
+The first half. `GV-CCM-016`, the control certifying that continuous controls
+monitoring is in place, read:
+
+```sql
+when 'GV-CCM-016'        then 'passing'
+```
+
+Not a judgement. A literal. It rendered `passing` on every run since the day it
+was written, and its evidence string was
+`'controls evaluated '||to_char(v_now,...)`, which is the timestamp of the write
+that produced it. The control asserting that monitoring works was the one control
+that was not being monitored, and it would have certified a dead `pg_cron` job
+indefinitely. The fix computes from live catalog state:
+
+```sql
+select exists(select 1 from cron.job
+               where jobname='tf-controls-evaluate-monthly' and active)
+  into v_ccm_cron;
+...
+when 'GV-CCM-016'        then case when v_ccm_cron then 'passing' else 'failing' end
+```
+
+This is the same family as the seeded register of migration 276 and the unread
+axis of migration 285. In each case the presence of a thing was mistaken for the
+property the thing was supposed to have. A branch existing is not the same as a
+branch working, and `tf_controls_board`'s `tautological_total` axis now measures
+the difference by regex over the evaluator's own catalog text.
+
+The second half. `CM-BOARDFRESH-027` reports how old the board was. If it reads
+the board from inside the `UPDATE` that stamps it, it measures its own write and
+publishes zero hours old forever. `tf_controls_evaluate` therefore calls
+`tf_controls_board()` in its first statements, before anything is written, holds
+the result in `v_board`, and the control's evidence ends with the words *"Age is
+measured before this run stamps the board"* so a reader can verify the ordering
+without reading the source. Any freshness signal computed downstream of the
+write it measures is structurally incapable of being non-zero.
 
 **Seventeen. A migration that touches the control register asserts the
 register's aggregate state before it commits, not the state of the row it
@@ -1747,17 +1842,44 @@ from public.auto_tickets order by created_at;
 
 ### GRC controls
 
-**26 controls, 23 `passing`, 3 `attention`, 0 `failing`** as of migration 287.
+**27 controls, 24 `passing`, 3 `attention`, 0 `failing`** as of migration 290.
 The three in `attention` are `AC-PRIV-002` (one intentionally anon-exposed
 definer function, carrying a live exemption row that suppresses a real finding),
 `AC-MFA-003` and `DP-PITR-007`, the latter two being owner actions 3 and 4 above.
 Evaluated monthly by `tf-controls-evaluate-monthly`, and on demand by
 `tf_controls_evaluate()`, which is a writer and takes no arguments.
 
-Six of the 26 are manual and **none of the six has ever been attested**. That is
+Six of the 27 are manual and **none of the six has ever been attested**. That is
 counted rather than assumed, and it is an owner action, not an engineering one.
 
-The three most recently added are the signal-consumption tier, all owned by
+Before reading any status on this board, read the board itself:
+
+```sql
+select public.tf_controls_board();
+```
+
+Expect `authoritative: true`. That single boolean is false if the register is
+older than 792 hours, if any automated control has no status branch in
+`tf_controls_evaluate`, or if any branch asserts a status literal instead of
+computing one. A board of green statuses proves nothing until `authoritative`
+reads true, because `it_controls.status` is a cache and until migration 288
+nothing on the platform knew how old that cache was. `CM-BOARDFRESH-027` renders
+the same three numbers as a control. See
+[`CONTROL_BOARD_FRESHNESS.md`](./CONTROL_BOARD_FRESHNESS.md), which also records
+why `last_evaluated_at` cannot be used for this: it is a **write** timestamp. The
+evaluator stamps every automated row from one `UPDATE` sharing one `v_now` and
+its status CASE ends `else status end`, so an unscored row is stamped as fresh as
+a scored one and `count(distinct last_evaluated_at)` reads 1.
+
+The most recently added, by migration 290, is `CM-BOARDFRESH-027`, owned by
+`CISO`, automated, reading `tf_controls_board` `authoritative`. The same
+migration fixed `GV-CCM-016`, which had been hardcoded to `'passing'` since it
+was written: the control certifying continuous controls monitoring was the one
+control not being monitored. It now computes from live `cron.job` state and
+would read `failing` if `tf-controls-evaluate-monthly` were dropped or
+deactivated.
+
+The three before that are the signal-consumption tier, all owned by
 `CISO`, all automated, added by migrations 284 and 287:
 
 - `CM-TRUNCGRANT-024` — privileges outside the RLS-evaluated set are not held by
@@ -2591,6 +2713,82 @@ and none of which can therefore be coverage-checked; and an event trigger on
 all of it sits ClickUp `86bb3etah`, the deployment-coordination decision, which
 pass 9 named the largest unmitigated governance risk in the backend and which
 passes 10 and 11 have both left untouched.
+
+**Pass 12, 2026-07-25, at migration 290.** Pass 11 resumed the sweep at the
+freshness gate, the oldest untouched item in the chain. Pass 12 built it, and in
+doing so found a strictly more serious defect the gate had not been designed to
+look for. Ordinals 288 through 290 are contiguous with no concurrent-agent
+interleave.
+
+| Claim carried into this pass | What the catalog said | Resolution |
+| --- | --- | --- |
+| A row whose `last_evaluated_at` lags `max(last_evaluated_at)` is a row the evaluator did not score | it cannot be. `tf_controls_evaluate` writes every automated row in one `UPDATE` sharing one `v_now`, and its status CASE ends `else status end`, so an unscored row keeps its old status **and is stamped fresh anyway**. `count(distinct last_evaluated_at)` reads 1 across the whole board | the design was discarded before a line of it was written. `last_evaluated_at` is a **write** timestamp, not an evaluation timestamp, and a detector built on it would have reported zero forever over a population it never declared. Replaced with a reader that parses the evaluator's own `pg_get_functiondef`. **The write-timestamp trap** |
+| Every automated control has a status branch, so the only question is whether the board is stale | the question was never whether a branch exists. `GV-CCM-016` had a branch, and the branch read `when 'GV-CCM-016' then 'passing'`. The control certifying continuous controls monitoring was a hardcoded constant that could not fail, carrying the timestamp of its own write as evidence | migration 289 added a second axis, `tautological_total`, matching branches against `^'(passing\|failing\|attention\|manual)'`. It named `GV-CCM-016` on its first run and correctly declined to name `AC-RLS-001` or `CM-SIGNALCOV-026`, both of which compute. **The tautological control**, convention 35 |
+| Ship the detector and the fix together, it is one batch | shipping them together makes the finding indistinguishable from an author fixing something quietly while adding the check that would have caught it | migration 289 shipped the detector and **left `GV-CCM-016` broken on purpose**, so the history records the machine finding it. Migration 290 fixed it. The cost is one migration where the board reads `authoritative: false`; the value is that the finding is evidence rather than assertion |
+| The freshness control can read the board wherever it is convenient in the evaluator | read after the `UPDATE` and it scores its own write. `board_age_hours` would read 0.00 on every run forever, and nothing about that output looks anomalous | the `tf_controls_board()` call was hoisted into the evaluator's opening statements, before anything is stamped, and the `CM-BOARDFRESH-027` evidence string ends *"Age is measured before this run stamps the board"* so the ordering is verifiable without the source. **The self-stamping signal**, house rule eighteen |
+| Patching `tf_controls_evaluate` textually is routine, the idiom is established | the deployed body is 17103 characters and five separate splices were needed. A `replace` whose anchor matches zero places is a silent no-op; one that matches twice commits both | every anchor was asserted to occur **exactly once** first, via `(length(v_new) - length(replace(v_new, a, ''))) / length(a)`, refusing the whole migration otherwise. Before writing the anchors, the exact bytes were read with `encode(convert_to(substring(...), 'UTF8'), 'escape')`, confirming eight spaces between `'GV-CCM-016'` and `then`. **The asserted textual splice** |
+| Replacing the evaluator risks reopening the creation exposure window | `CREATE OR REPLACE` preserves the ACL, as asserted live in migration 287 | relied on again rather than re-derived. House rule fifteen governs creates, not replaces, and `tf_controls_board` itself, a genuine create, took its grant tier in the same migration per convention 33 |
+
+| Verified at the start of this pass | Verified at the end | What was re-read |
+| --- | --- | --- |
+| Migrations 287, conventions 33, house rules 17, controls 26, axes 6 | 290 / 36 / 18 / 27 / 6 | inventory, conventions register, house rules, defect-pattern library, symptoms table, open register, `IT_GOVERNANCE_GRC.md`, `LEAST_PRIVILEGE_TABLE_GRANTS.md`, `MIGRATIONS_INDEX.md`, and a new `CONTROL_BOARD_FRESHNESS.md` |
+
+Live state at 15:54Z. `tf_controls_evaluate()`: 27 controls, 24 passing,
+**0 failing**, 3 attention, 21 automated, 6 manual and all 6 never attested.
+`tf_controls_board()`: `ok true`, `authoritative true`, `fresh true`,
+`board_age_hours 0.01` against `threshold_hours 792`, `automated_total 21`,
+`scored_total 21`, `unscored_total 0`, `tautological_total 0`,
+`controls_total 27`, `manual_total 6`, `distinct_stamps 1`, `stamp_uniform true`,
+`status_case_length 3217`, `evaluator_def_length 19742`.
+`tf_controls_signal_coverage()`: `ok true`, `gap_total 0`, `unread_total 0`,
+`declared_axes 6`, `refusal_flag_honoured true`.
+`tf_grant_tier_audit()`: `ok true`, 100 pct coverage, `declared_total 95`,
+`tf_population_total 94`, `tf_covered_total 94`, zero violations, zero missing,
+zero uncovered, zero drift. `tf_function_safety_audit()`: `undeclared_total 0`,
+`drift_total 0`. `tf_security_scan()`: `ok true`, `gap_total 2` over 174 tables.
+
+Live evidence strings, quoted because they are the audit artifact:
+`GV-CCM-016` reads *"tf-controls-evaluate-monthly scheduled and active
+(0 14 1 * *); last run stamped 2026-07-25 15:54 UTC"*. `CM-BOARDFRESH-027` reads
+*"board was 0.42h old entering this run against a 792h threshold from
+tf-controls-evaluate-monthly (0 14 1 * *); 0 automated control(s) with no status
+branch [] and 0 branch(es) asserting a status literal []. Age is measured before
+this run stamps the board"*.
+
+Three results from this pass are worth carrying forward.
+
+The first is that **a register of judgements is a cache, and a cache with no date
+on it is not evidence**. Every control on this board could read `passing` against
+an evaluation that last ran in March, and until migration 288 nothing on the
+platform could tell. The fix is not a bigger checker, it is publishing the age
+beside the verdict, against a threshold derived from the cadence that is supposed
+to refresh it, so the freshness claim is falsifiable.
+
+The second is that **the detector and the thing it detects must not be the same
+event**. The freshness reading had to be hoisted above the write it measures, and
+the tautology detector had to parse the evaluator's catalog text rather than ask
+the evaluator how it was doing. Both are instances of the migration 276 rule that
+agreement between a checker and something it wrote is not corroboration, now
+extended from registers to timestamps and to a function's own self-report.
+
+The third is that **presence was never the property worth checking**. Three
+passes have now found the same shape wearing different clothes: a register row
+that existed and was seeded by its own reader, an axis that existed and nothing
+consumed, a status branch that existed and asserted a constant. In each case the
+thing was there. Checking that it was there is what let it stay wrong. The
+question to ask of any mechanism is not whether it is present but whether it can
+produce an answer other than the one it is producing.
+
+The sweep resumes at the four checkers that publish no machine-readable `axes`
+array, `tf_grant_tier_audit`, `tf_function_safety_audit`,
+`tf_guard_detection_audit` and `tf_automation_note_drift`. None of them can be
+coverage-checked, so convention 31 currently holds over one checker out of five
+and that limit is not published anywhere the board can see it. Behind that sits
+obligation two of convention 33, which is detected after the fact rather than
+enforced, and which an event trigger on `ddl_command_end` would make structural.
+Behind all of it, still, sits ClickUp `86bb3etah`, the deployment-coordination
+decision, which passes 9 through 12 have now named the largest unmitigated
+governance risk in the backend four consecutive times without reducing it.
 
 ---
 

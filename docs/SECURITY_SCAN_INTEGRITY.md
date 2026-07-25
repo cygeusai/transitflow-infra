@@ -494,5 +494,10 @@ select (public.tf_security_scan())->'tables_truncatable_by_client',
 - `docs/CONTROL_SIGNAL_COVERAGE.md` — migrations 284 through 287, which wire the
   axes this document declares into control rows and then detect the class of
   defect where an axis has no consumer at all
-- `docs/PLATFORM_KNOWLEDGE_BASE.md` — conventions, house rules and the Pass 10
-  and Pass 11 verification logs
+- `docs/CONTROL_BOARD_FRESHNESS.md` — migrations 288 through 290, which apply
+  this document's undeclared-denominator lesson to the control register itself:
+  a board of green statuses with no age on it cannot be told apart from an
+  abandoned one, and a status branch that asserts a literal cannot be told apart
+  from one that computes
+- `docs/PLATFORM_KNOWLEDGE_BASE.md` — conventions, house rules and the Pass 10,
+  Pass 11 and Pass 12 verification logs

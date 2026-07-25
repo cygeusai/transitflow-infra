@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (252 migrations
+The full, ordered migration history of the Transit & Flow backend (257 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -135,6 +135,22 @@ of what exists so nothing is silently dropped.
 | 250 | 20260725115002 | automation_blast_radius_transcription_and_bounding_model |
 | 251 | 20260725115531 | automation_registry_note_drift_checker |
 | 252 | 20260725120338 | note_drift_control_and_register_reconciliation |
+| 253 | 20260725123300 | guard_predicate_registry |
+| 254 | 20260725123404 | security_scan_reads_guard_registry |
+| 255 | 20260725123524 | guard_detection_control_ac_guardreg_023 |
+| 256 | 20260725123605 | guard_detection_autoticket_wiring |
+| 257 | 20260725123649 | guard_detection_induced_failure_proof |
+
+> **Migrations 253 through 257 are one change**, split into five so each half of
+> the work could be asserted before the next was applied. They move guard
+> detection out of `tf_security_scan`'s body and into
+> `tf_guard_predicate_registry`, make the match run against comment-stripped
+> source, add control `AC-GUARDREG-023`, wire the `safety:guard_detection`
+> ticket, and prove the whole chain by inducing a comment-only guard and
+> observing it caught. The design, the before-and-after code, the proof
+> transcript and the operator runbook are in
+> [`docs/GUARD_DETECTION.md`](../../docs/GUARD_DETECTION.md). Read that rather
+> than the raw SQL: it carries the reasoning the SQL cannot.
 
 > **Migrations 249 through 252 are checked into this directory in full**, as
 > `<version>_<name>.sql`. They are the first migrations stored here verbatim

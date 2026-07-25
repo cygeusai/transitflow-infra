@@ -4,7 +4,7 @@ The single troubleshooting reference for the Transit & Flow backend. Written to
 be read at 2am by someone who did not build it.
 
 State captured 2026-07-25 against Supabase project `kjooyhvynkzuvsixsutt` at
-migration 252. Every number in this document was read out of the live database,
+migration 257. Every number in this document was read out of the live database,
 not remembered.
 
 ---
@@ -59,6 +59,7 @@ select public.tf_security_scan();     -- five axes, gap_total should be 0
 select public.tf_queue_health();      -- lanes, orphans, stuck events
 select public.tf_scheduler_health();  -- pg_cron, per-job first-seen and lateness
 select public.tf_data_quality_audit();  -- referential and convention integrity
+select public.tf_guard_detection_audit();  -- is the guard check itself sound?
 
 -- connector credentials and freshness
 select provider, is_enabled, last_sync_status,
@@ -78,6 +79,7 @@ function is a read, and two of them are named as though they were.
 | `tf_queue_health()` | none | staff, or no JWT |
 | `tf_scheduler_health()` | **writes** `cron_job_registry` | staff, or no JWT |
 | `tf_data_quality_audit()` | none | **staff JWT required** |
+| `tf_guard_detection_audit()` | none | staff, or no JWT |
 | `tf_revenue_linkage_audit(90)` | none | **staff JWT required** |
 | `tf_marketing_roi(90)` | none | **staff JWT required** |
 | `tf_integration_health_report(...)` | **records an outage, opens a ticket** | not a diagnostic |
@@ -174,6 +176,10 @@ Routed by what you observe. Each row names the check to run first.
 | `42601: too many parameters specified for EXECUTE` from a blast-radius call | The predicate ignores `$1` or `$2` | *Defect-pattern library*, "Blast-radius predicate arity" |
 | `42P10: no unique or exclusion constraint matching ON CONFLICT` | The arbiter guessed does not exist on that table | `select conname, pg_get_constraintdef(oid) from pg_constraint where conrelid='<table>'::regclass` |
 | `42601: too many parameters specified for RAISE` in a freshly patched function | A `%%` was written inside an anchored `replace()` payload | *Defect-pattern library*, "No doubling layer inside a catalog patch" |
+| `AC-GUARDREG-023` is failing | A definer function reads as guarded only because of a comment, or the scanner stopped reading the registry | `tf_guard_detection_audit()` → `comment_only_fns` then `integrity_violations`; see `GUARD_DETECTION.md` |
+| `AC-DEFN-017` and `AC-GUARDREG-023` fail together, naming the same function | A real unguarded definer function reachable by `authenticated` | read the body, add a guard or an approved `security_scan_exemptions` row |
+| `tf_guard_pattern: tf_guard_predicate_registry is empty` | Somebody truncated the guard registry | reseed from migration 253; the raise is deliberate, a null pattern would pass everything |
+| Three security controls read `attention` at once and evidence shows `?` | `tf_security_scan()` raised, so its signals propagate null | call `tf_security_scan()` directly and read the actual error |
 
 ---
 
@@ -274,6 +280,18 @@ raises `42883`. This has bitten twice.
 It returns `false` rather than raising when `auth.uid()` is null, which is what
 makes the cron-tolerant form work at all.
 
+**How the platform decides a function carries one of these forms.**
+`tf_security_scan` matches a pattern assembled from
+`tf_guard_predicate_registry` against
+`tf_strip_sql_comments(pg_get_functiondef(oid))`. Comments are stripped before
+the match, so a sentence describing a guard is not a guard. String literals are
+deliberately left in, because a function that builds dynamic SQL carries its
+`where` clause in a literal by construction; literal-only matches are reported as
+advisory rather than gated. Both counts are zero today. The rules are rows, not
+code: adding a sixteenth helper is an `insert`, and editing the scanner to add a
+name is the defect that `AC-GUARDREG-023` exists to catch. Full treatment in
+[`GUARD_DETECTION.md`](./GUARD_DETECTION.md).
+
 ### The grant tiers
 
 Guards in the function body are only half the story. The `EXECUTE` grant decides
@@ -369,26 +387,64 @@ at all.
 `0 */6 * * *` and closes what it can close mechanically, chiefly missing
 `search_path` pins.
 
-**Read this before you trust the zero.** The fifth axis is a *textual* test. It
-scans `pg_get_functiondef` for any of a fixed list of authorization identifiers,
-`user_is_internal_staff`, `user_is_internal_writer`, `studio_is_staff`,
-`has_permission`, `user_has_role`, `is_company_member`, `user_company_id`,
-`current_company`, `current_owner_`, `current_tenant_`, `current_user_role`,
-`is_privileged_role`, `user_is_assigned_to_`, `current_supabase_user_id`, and
-bare `auth.uid`. A function that merely *mentions* one of those tokens passes,
-even if it never acts on the result.
+**Read this before you trust the zero.** The fifth axis is a *textual* test, and
+until migration 254 it was a worse one than anybody reading the green zero
+realised. Two things changed.
 
-That is a deliberate trade and the reason it is acceptable is worth stating: a
-semantic check is not expressible in SQL, and a textual check that runs every
-six hours and catches the common case beats a perfect check that does not exist.
-But it means **a green fifth axis is evidence, not proof**. When a new definer
-function is granted to `authenticated`, read its guard yourself. Do not let the
-scan read it for you.
+**The rules moved out of the function and into a table.** The fifteen
+authorization identifiers now live in `public.tf_guard_predicate_registry`, one
+row each, carrying a regex fragment, a guard class and a written rationale.
+`tf_guard_pattern()` assembles the alternation from that table and
+`tf_security_scan` calls it. Adding a sixteenth helper is an `insert`, not a
+rewrite of the scanner.
 
-There are 48 definer functions reachable by `authenticated`. Their guards break
-down as: 11 strict staff, 3 cron-tolerant, 1 RBAC via `has_permission`, and the
-remainder party-scoped through `user_is_internal_writer` or the `current_owner_*`
-and `current_tenant_*` helpers.
+| Guard class | Helpers |
+| --- | --- |
+| `staff_role` | `user_is_internal_staff`, `user_is_internal_writer`, `studio_is_staff` |
+| `permission` | `has_permission`, `user_has_role`, `current_user_role`, `is_privileged_role` |
+| `tenant_scope` | `user_company_id`, `current_company`, `current_tenant_`, `is_company_member` |
+| `owner_scope` | `current_owner_` |
+| `assignment` | `user_is_assigned_to_` |
+| `session_identity` | `auth.uid`, `current_supabase_user_id` |
+
+Three fragments are prefixes on purpose. `current_owner_` covers
+`current_owner_unit_ids` and `current_owner_work_order_ids`; `current_tenant_`
+and `user_is_assigned_to_` cover their families the same way.
+
+**The match now runs against code, not source text.** The scan compares the
+pattern to `tf_strip_sql_comments(pg_get_functiondef(oid))`. Before migration
+254 it matched raw source, which meant a function whose only guard was the
+sentence `-- protected by auth.uid() and user_is_internal_staff` passed the
+check, `AC-DEFN-017` read `passing`, and the dashboard was green. Zero functions
+were actually exploiting that, measured, but nothing prevented it and nothing
+would have reported it.
+
+String literals are deliberately **not** stripped before the gating match. A
+function that builds dynamic SQL puts its `where` clause in a literal by
+construction, so gating on literal-stripped source would fail functions for
+doing the right thing. Literal-only matches are reported by
+`tf_guard_detection_audit()` as `literal_only_total` for a human to look at.
+Both that and `comment_only_total` are zero today.
+
+What is still true: a function that *calls* a guard helper and ignores the
+result passes. A semantic check is not expressible in SQL. **A green fifth axis
+is evidence, not proof.** When a new definer function is granted to
+`authenticated`, read its guard yourself. Do not let the scan read it for you.
+
+`tf_security_scan` gained two additive output keys, `guard_pattern_source` and
+`guard_helpers`, so the payload describes its own rules to whoever reads it.
+Control **AC-GUARDREG-023** watches the watcher: it fails if the registry is
+emptied, if the scanner stops calling `tf_guard_pattern` or
+`tf_strip_sql_comments`, if an inline alternation reappears in the scanner body,
+or if any function reads as guarded only because of a comment. The full design,
+the before-and-after code and the operator runbook are in
+[`GUARD_DETECTION.md`](./GUARD_DETECTION.md).
+
+There are 55 definer functions reachable by `authenticated` and not exempt. All
+55 carry a recognised authorization predicate in executable code. The guards
+break down as strict staff, cron-tolerant staff, RBAC via `has_permission`, and
+party-scoped through `user_is_internal_writer` or the `current_owner_*` and
+`current_tenant_*` helpers.
 
 Two functions sit on the exemption list in `public.security_scan_exemptions`:
 `tf_security_scan` itself, and `tf_rent_payments_enabled`, which is a boolean
@@ -498,11 +554,12 @@ time.
 | 11 | Function EXECUTE grants | every function carries exactly the grants its declared tier implies | `tf_function_grant_tiers` + `tf_grant_tier_audit`, control `CM-GRANT-021`, ticket key `safety:grant_tier` |
 | 12 | Control evidence integrity | an automated control must be named in both the status CASE and the evidence CASE | `tf_controls_evaluate` wiring assertion in every control migration |
 | 13 | Manual control attestation | manual controls are attested by a human through `tf_control_attest`, never auto-passed | `it_controls.last_attested_at` split from `last_evaluated_at` |
-| 14 | Detection rules as data | patterns live in tables, not in checker bodies | `tf_function_safety_patterns`, `tf_boolean_param_conventions`, `tf_automation_registry`, `tf_function_grant_tiers` |
+| 14 | Detection rules as data | patterns live in tables, not in checker bodies | `tf_function_safety_patterns`, `tf_boolean_param_conventions`, `tf_automation_registry`, `tf_function_grant_tiers`, `tf_guard_predicate_registry` |
 | 15 | Tenant scoping in sweeps | every sweep filters `company_id = v_company`, and the enable flag it reads is scoped the same way | migration 249 for the sweeps, migration 250 for the settings reads; the reviewer's check is `pg_get_functiondef` |
 | 16 | Automation bounding | every automation declares `bounded_by` as one of `cutover`, `natural_window`, `unbounded`, `edge_function` | CHECK constraint on `tf_automation_registry.bounded_by`; `tf_automation_arm` refuses an `unbounded` automation with a non-zero blast radius |
 | 17 | Blast-radius predicate arity | every predicate references both `$1` (cutover) and `$2` (company), using the visible tautology where there is no cutover | `tf_automation_blast_radius` executes `using coalesce(v_since, now()), v_company`; a predicate that ignores either one raises at call time |
 | 18 | Registry note currency | the note is part of the change, not documentation of it, and is rewritten in the same transaction as the sweep | `tf_automation_note_drift`, control `CM-NOTEDRIFT-022`, ticket key `safety:note_drift` |
+| 19 | Guard detection as data, matched on code | guard-helper names live in a table, and the match runs against comment-stripped source so a comment cannot stand in for a guard | `tf_guard_predicate_registry`, `tf_guard_pattern`, `tf_strip_sql_comments`, `tf_guard_detection_audit`, control `AC-GUARDREG-023`, ticket key `safety:guard_detection` |
 
 The countermeasure that keeps working is the same every time: express the
 convention in the database, on the *normalised* form of the value, so violation
@@ -511,7 +568,7 @@ is impossible rather than merely discouraged.
 Convention documented in prose is a convention that will drift. Convention
 expressed as a unique index is a convention that cannot.
 
-**Conventions 8 through 18 share a shape worth naming.** Each one is a table of
+**Conventions 8 through 19 share a shape worth naming.** Each one is a table of
 rules, a function that applies them, a checker that compares live state to the
 table, a GRC control that fails when they disagree, and an auto-ticket key that
 puts the disagreement in front of a human. Five parts. When a new convention is
@@ -702,11 +759,48 @@ as "zero" rather than as "wrong question", which makes it more dangerous than a
 syntax error. Fix: `select jsonb_object_keys(<payload>)` once, then project. Same
 lesson as the column-name assumption, one layer up.
 
+**The checker with its rules compiled in.** `tf_security_scan` decided whether a
+`SECURITY DEFINER` function was guarded by matching a fifteen-name regex written
+directly into its own body, against raw `pg_get_functiondef` output. Two
+failures in one. The rules could not be extended without rewriting the scanner,
+violating convention 14 in the one place it mattered most. And matching raw
+source meant comments counted: a function whose entire guard was the sentence
+`-- authorization: protected by auth.uid() and user_is_internal_staff` passed,
+and `AC-DEFN-017` reported `passing` over it. Measured exposure at discovery was
+54 of 54 functions passing on both raw and stripped source, so zero were
+actually exploiting it, but nothing prevented the fifty-fifth. Fix, migrations
+253 through 257: rules into `tf_guard_predicate_registry`, match against
+`tf_strip_sql_comments(...)`, and a new control `AC-GUARDREG-023` that fails if
+either property is ever reverted. The general shape: **when a checker's rules
+live inside the checker, nothing checks the rules.**
+
+**The null pattern that passes everything.** `x !~* null` evaluates to null, not
+true. A checker that builds its match pattern by aggregating a table returns
+null the moment that table is empty, and a `where ... !~* null` filter then
+returns zero rows. The control reads `passing` while protecting nothing, and
+truncating a table becomes a way to turn a dashboard green. This is why
+`tf_guard_pattern()` is `plpgsql` rather than `sql`: its only reason to exist in
+that language is to `raise` on an empty registry instead of returning null. Any
+checker that derives its rules from a table must refuse to run on an empty
+table. Loud failure over quiet corruption.
+
+**A control that passes because its own evaluation crashed.**
+`tf_controls_evaluate` called `tf_security_scan()` as its unguarded first
+statement and used `coalesce(..., 0)` on the result. Introducing a function that
+can `raise` anywhere in that call chain would have aborted the entire evaluation,
+leaving all twenty-three controls holding whatever status they last had, with no
+signal that the evaluation never ran. Worse, the `coalesce` to zero meant a
+partially-failed measurement would have read as a clean result. Fix in migration
+255: wrap every audit call in `begin ... exception when others then <var> := null;
+end`, propagate `null` rather than `0`, and report `attention` on null. A zero
+substituted for a failed measurement is a false green, and a false green is worse
+than a red.
+
 ---
 
 ## The house rules
 
-Nine rules, each of which exists because breaking it cost real time.
+Ten rules, each of which exists because breaking it cost real time.
 
 **A migration that creates or replaces a function must drive that function in a
 post-check, not inspect it.** Migration 229 in this repo's ordinal series applied
@@ -758,7 +852,8 @@ compiled into a checker body can only be revised by someone willing to rewrite
 that function. The same rule in a table can be read, queried, added to and
 audited by an operator with no context. This is why
 `tf_function_safety_patterns`, `tf_boolean_param_conventions`,
-`tf_automation_registry` and `tf_function_grant_tiers` exist as data.
+`tf_automation_registry`, `tf_function_grant_tiers` and
+`tf_guard_predicate_registry` exist as data.
 
 **Declare what you create, in the same transaction that creates it.** A
 migration that adds a function must add its `tf_function_registry` row and call
@@ -779,6 +874,22 @@ fails to fire. Migration 252 proved `CM-NOTEDRIFT-022` this way: clean baseline,
 induced drift, control observed at `failing`, fixture deleted, control observed
 back at `passing`, registry back at 13 rows. Without the induced failure, all
 that migration would have proved is that a control can return `passing`.
+
+**Verify the verifier.** Twenty-two controls watched the platform and nothing
+watched the thing that decides whether a control can see a defect. When
+`tf_security_scan`'s guard detection turned out to accept a comment in place of a
+guard, every control reading it had been reporting success from a broken
+measurement, and success from a broken checker is indistinguishable from success
+from a working one right up until an audit or an incident. Every checker on this
+platform now has something above it: a checker of its own rules, an integrity
+block that asserts it still calls what it is supposed to call, or a control that
+fails when it stops. Migration 257 is the pattern in full, a
+`SECURITY DEFINER` function created live whose only guard is a comment, five
+assertions that the new logic catches what the old logic missed, the fixture
+dropped after the exception handler so it comes out on every code path, and
+recovery asserted afterwards. Ask of every new control: what happens if this
+control's own evaluation is wrong? If the answer is "it reports passing", the
+control is not finished.
 
 ---
 
@@ -1065,18 +1176,31 @@ from public.auto_tickets order by created_at;
 
 ### GRC controls
 
-22 controls, 20 `passing`, 2 `attention`, 0 `failing`. The two in `attention` are
+23 controls, 21 `passing`, 2 `attention`, 0 `failing`. The two in `attention` are
 AC-MFA-003 and DP-PITR-007, which are owner actions 3 and 4 above. Evaluated
 monthly by `tf-controls-evaluate-monthly`, and on demand by
 `tf_controls_evaluate()`, which is a writer.
 
-The five most recently added controls are the convention-enforcement tier:
+The six most recently added controls are the convention-enforcement tier:
 `AC-DEFN-017` (definer authorization), `CM-FNDRIFT-018` (function register
-drift), `CM-AUTOARM-020` (out-of-band arming), `CM-GRANT-021` (grant tier drift)
-and `CM-NOTEDRIFT-022` (registry notes agree with the catalog). Each was observed
-failing under an induced defect inside the migration that created it, then
-observed recovering. A control that has only ever been seen passing is not
-evidence of anything.
+drift), `CM-AUTOARM-020` (out-of-band arming), `CM-GRANT-021` (grant tier drift),
+`CM-NOTEDRIFT-022` (registry notes agree with the catalog) and
+`AC-GUARDREG-023` (guard detection rules are data and are evaluated against
+executable code). Each was observed failing under an induced defect inside the
+migration that created it, then observed recovering. A control that has only ever
+been seen passing is not evidence of anything.
+
+`AC-GUARDREG-023` is the one that watches another control. It fails when
+`AC-DEFN-017`'s own detection is unsound, which is a different question from
+whether any function is unguarded, and the reason it exists is that nothing else
+on the platform was asking it. See [`GUARD_DETECTION.md`](./GUARD_DETECTION.md).
+
+`tf_controls_evaluate` now wraps every audit call it makes and propagates `null`
+rather than `0` when one raises. `AC-RLS-001`, `AC-PRIV-002`, `AC-DEFN-017` and
+`AC-GUARDREG-023` therefore read `attention` with `?` in the evidence when their
+underlying measurement could not run, rather than `passing` on a substituted
+zero. If several security controls go to `attention` at once, call the audit
+function directly and read the real error.
 
 ---
 
@@ -1124,39 +1248,43 @@ Read live from the catalog, not counted by hand.
 
 | | Count |
 | --- | --- |
-| Migrations applied | 252 |
-| Base tables in `public` | 170 |
-| Tables with RLS enabled | 170 (100%) |
-| RLS policies | 581 |
-| Functions in `public` | 271 |
-| `tf_*` operator functions | 80 |
-| `tf_*` functions declared in `tf_function_registry` | 80 (100%) |
-| Functions with a declared grant tier | 14 |
+| Migrations applied | 257 |
+| Base tables in `public` | 171 |
+| Tables with RLS enabled | 171 (100%) |
+| RLS policies | 582 |
+| Functions in `public` | 275 |
+| `tf_*` operator functions | 84 |
+| `tf_*` functions declared in `tf_function_registry` | 84 (100%) |
+| Functions with a declared grant tier | 18 |
 | Views | 7 |
 | Enums | 80 |
-| Indexes | 654 |
+| Indexes | 655 |
 | Active pg_cron jobs | 37 |
 | Edge functions | 37 |
-| GRC controls | 22 |
-| Controls passing / attention / failing | 20 / 2 / 0 |
+| GRC controls | 23 |
+| Controls passing / attention / failing | 21 / 2 / 0 |
 | Automations registered | 13 |
 | Automations armed | 0 of 13 |
 | Automation registry note drift | 0 |
+| Registered guard helpers | 15 |
+| Definer functions scanned for a guard | 55 |
+| Unguarded / comment-only / literal-only | 0 / 0 / 0 |
+| Guard-detection integrity violations | 0 |
 
-170 of 170 tables carry RLS. That is the number to re-check after any migration
+171 of 171 tables carry RLS. That is the number to re-check after any migration
 that creates a table, because a new table without RLS is the single fastest way
 to open a cross-tenant leak, and `rls_disabled_tables` is the axis that catches
 it.
 
-80 of 80 `tf_*` functions are declared in `tf_function_registry`. That is the
+84 of 84 `tf_*` functions are declared in `tf_function_registry`. That is the
 second number to re-check, because an undeclared function is one whose
 side-effect class nobody has stated, and `tf_function_safety_audit()` will open a
 ticket under `safety:function_drift` within fifteen minutes if the two counts
 diverge. It did exactly that between migrations 251 and 252; see the
 defect-pattern library.
 
-Fourteen of the eighty carry a declared grant tier. That number is deliberately
-smaller than eighty and is not a coverage gap: a tier is declared where the
+Eighteen of the eighty-four carry a declared grant tier. That number is
+deliberately smaller than eighty-four and is not a coverage gap: a tier is declared where the
 intended reachability is not obvious from the function's role, and
 `tf_grant_tier_audit()` enforces the declared ones at `violation_total: 0`.
 Widening the declared set is cheap and is the standing recommendation whenever a
@@ -1183,7 +1311,14 @@ select
   (select count(*) from public.tf_function_registry)                                    as declared,
   (select count(*) from public.tf_function_grant_tiers)                                 as tiered,
   (select count(*) from cron.job where active)                                          as cron_jobs,
-  (select count(*) from public.it_controls)                                             as controls;
+  (select count(*) from public.it_controls)                                             as controls,
+  (select count(*) from public.tf_guard_predicate_registry)                              as guard_helpers;
+```
+
+And for the guard-detection numbers specifically:
+
+```sql
+select public.tf_guard_detection_audit();
 ```
 
 ---
@@ -1219,7 +1354,8 @@ subject-specific notes beside it in `docs/`:
 - `SECURITY_GUARDS_AND_QUEUE_LANES.md` — the guard sweep, AC-DEFN-017, lane registry
 - `FUNCTION_GRANT_TIERS.md` — the three-tier grant model, the Supabase default-privileges trap, `CM-GRANT-021`
 - `AUTOMATION_ARMING.md` — the automation registry, the bounding model, the blast-radius predicate contract, the arming sequence and its refusal classes, `CM-NOTEDRIFT-022`
-- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom
+- `GUARD_DETECTION.md` — how a `SECURITY DEFINER` function is judged guarded, the guard predicate registry, the comment-stripped match, the comments-gated / literals-advisory line, `AC-GUARDREG-023`, and the induced comment-only guard that proves the chain
+- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, and 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`
 
 Notion carries the same material for non-engineers under **🧭 Operations Hub —
 SOPs & FAQs**, with persona-routed SOPs and FAQs. ClickUp carries the
@@ -1335,6 +1471,61 @@ measurement and a note read before the state changes, and it is the reason
 here. **A system verified only in the state it is in has been verified for the
 one state that is not risky.**
 
+**Pass 4, 2026-07-25, at migration 257.** Five migrations landed between pass 3
+and pass 4, and all five exist because of a single finding this pass produced.
+Unlike pass 3, the defect was not in a code path waiting for a flag. It was in
+the **measurement instrument itself**, which means every prior pass's clean
+security reading had been taken with an instrument nobody had calibrated.
+
+| Claim as published | Live reality | Resolution |
+| --- | --- | --- |
+| "The fifth axis is a textual test, and a green fifth axis is evidence, not proof" | true, and understated. The test matched **raw** `pg_get_functiondef` output, so a guard-helper name appearing only in a comment satisfied it. A function whose entire guard was the sentence `-- protected by auth.uid()` passed | migration 254 matches against `tf_strip_sql_comments(...)`; migration 257 proves it by creating exactly that function and observing it caught |
+| Fifteen guard identifiers listed in prose, sourced from the scanner body | the list was compiled **into** `tf_security_scan`, the one checker on the platform that had not been brought under convention 14 | migration 253 moved all fifteen into `tf_guard_predicate_registry` with a class and a rationale per row |
+| `tf_controls_evaluate` treated as robust | it called `tf_security_scan()` as its unguarded first statement and `coalesce`d the result to `0`, so a raise anywhere in that chain would have frozen all controls on stale statuses, and a partial failure would have read as a clean zero | migration 255 wraps every audit call, propagates `null`, and reports `attention` on null across four controls |
+| "48 definer functions reachable by `authenticated`" | 55, none unguarded, and the count had been stale since pass 1 | re-read from the catalog; the query now sits beside the number |
+| Migrations 252, functions 80, tiers 14, controls 22, conventions 18, house rules 9 | 257 / 84 / 18 / 23 / 19 / 10 | every inventory row, the conventions register, the GRC section and the house rules re-read and re-counted |
+
+**Measured exposure, because this deserves a number rather than an adjective.**
+At the moment of discovery there were 54 definer functions granted to
+`authenticated` and not exempt. All 54 passed the raw-source regex. All 54 also
+passed once comments and literals were stripped. **Zero** passed only because of
+a comment or a literal. So the defect was latent, not realized, exactly like the
+migration-249 tenant-scoping finding, and exactly as unacceptable to leave in
+place: nothing prevented the fifty-fifth function from being the one that
+mattered, and nothing would have reported it.
+
+Two new defect classes went into the library this pass and both are general:
+**the checker with its rules compiled in**, where nothing checks the rules
+because the rules are not data; and **the null pattern that passes everything**,
+where `x !~* null` is null rather than true, so emptying a rules table turns a
+control green. The second one is the sharper of the two. It means that for any
+checker built the way this platform builds them, `truncate` is a privilege
+escalation unless the pattern builder refuses to return null. `tf_guard_pattern()`
+is written in `plpgsql` for that one reason.
+
+Everything re-measured this pass agreed on the second reading:
+`tf_function_safety_audit()` returned 84 functions, 55 writers, 29 reads, 7
+transitive writers, 20 documented diagnostics, `undeclared_total` 0, `drift` 0,
+`stale` 0, diagnostic violations 0, misleading names 7. `tf_grant_tier_audit()`
+returned `violation_total: 0` across 18 declared tiers.
+`tf_automation_note_drift()` returned `drift_count: 0`. `tf_security_scan()`
+returned `gap_total: 0`. `tf_guard_detection_audit()` returned 15 registry
+helpers, 55 scanned, 0 unguarded, 0 comment-only, 0 literal-only, 0 integrity
+violations. All thirteen automation flags read `false`, re-asserted inside
+migrations 250 through 252 and again inside 257 rather than merely observed
+afterwards.
+
+The finding worth carrying forward is the tenth house rule. Passes 1 and 2 found
+stale numbers. Pass 3 found unarmed hazards. Pass 4 found a **blind instrument**,
+and that is a different and worse category, because the first three classes
+announce themselves eventually and this one does not. A checker whose detection
+is wrong does not report a problem. It reports success. And success from a broken
+checker is byte-identical to success from a working one, right up until the audit
+or the incident that reveals which kind you had. Twenty-two controls were
+watching the platform and nothing was watching the thing that decides whether a
+control can see. **Verify the verifier**, then induce the failure and watch it
+get caught.
+
 ---
 
 ## The pattern, stated plainly
@@ -1362,3 +1553,14 @@ out. Loud failure is necessary and not sufficient. The other half is measuring
 the blast radius *before* the state changes, which is why arming is a procedure
 with refusals rather than an `update` statement, and why every automation on this
 platform must declare how it is bounded before it can be armed at all.
+
+Pass 4 added the last clause, and it closes the loop back on the document you are
+reading. Every countermeasure above is itself a component, and a component can
+disagree with reality just as quietly as the ones it watches. The scan that
+returned zero because it was looking for a word rather than a behaviour was not a
+hypothetical example in the paragraph above. It was `tf_security_scan`, it had
+been returning that zero to every dashboard and every control on this platform,
+and it was correct in outcome and wrong in method for its entire life. So the
+final rule is recursive: whatever you build to make disagreement loud, build
+something above it that goes loud when it stops listening. **Nothing on this
+platform is allowed to be the last thing in the chain, including this document.**

@@ -44,6 +44,7 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - [`SECURITY_GUARDS_AND_QUEUE_LANES.md`](./SECURITY_GUARDS_AND_QUEUE_LANES.md) — definer-guard axis, `AC-DEFN-017`, queue lane registry, orphan reason codes
 - [`FUNCTION_GRANT_TIERS.md`](./FUNCTION_GRANT_TIERS.md) — the three-tier `EXECUTE` model, the Supabase default-privileges trap, `tf_apply_grant_tier`, `CM-GRANT-021`
 - [`AUTOMATION_ARMING.md`](./AUTOMATION_ARMING.md) — **read before arming anything that reaches a customer.** The thirteen-automation registry, the four-value bounding model, the blast-radius predicate contract, the eight-step arming sequence and its five refusal classes, and the copy-paste arm/disarm/audit runbook
+- [`GUARD_DETECTION.md`](./GUARD_DETECTION.md) — **how the platform decides a `SECURITY DEFINER` function is guarded, and why that decision was wrong until migration 254.** The guard predicate registry, the comment-stripping match, the comments-gated / literals-advisory line, control `AC-GUARDREG-023`, and the induced comment-only guard that proves the whole chain catches
 
 ## Interactive artifacts (this folder)
 Self-contained HTML. Open directly in a browser, no build step, no network.
@@ -78,7 +79,24 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
 - Conventions live in tables, checkers read the tables. A detection rule compiled
   into a function body can only be changed by someone willing to rewrite that
   function. See `tf_function_safety_patterns`, `tf_boolean_param_conventions`,
-  `tf_automation_registry`, `tf_function_grant_tiers`.
+  `tf_automation_registry`, `tf_function_grant_tiers`,
+  `tf_guard_predicate_registry`.
+- Guard detection is data, and it matches executable code, not source text.
+  `tf_security_scan` builds its guard pattern from `tf_guard_predicate_registry`
+  and matches it against `tf_strip_sql_comments(pg_get_functiondef(oid))`. A
+  guard-helper name that appears only in a comment used to satisfy the check
+  without guarding anything. Never add a helper name by editing the scanner;
+  insert a registry row. `AC-GUARDREG-023` fails the moment an inline
+  alternation reappears in the scanner body. See `GUARD_DETECTION.md`.
+- `x !~* null` is null, not true. Any checker that builds its pattern from a
+  table must refuse to run on an empty table rather than return null, because a
+  null pattern makes every row pass and turns the control green while it
+  protects nothing. `tf_guard_pattern()` is `plpgsql` for this one reason.
+  Emptying a table must never be a way to pass a control.
+- A control must never pass because its own evaluation crashed.
+  `tf_controls_evaluate` wraps every audit call it makes, propagates `null`
+  rather than `0` when a call raises, and reports `attention` on null. A zero
+  substituted for a failed measurement is a false green.
 - Never string-splice prose into a generated function body. Every quote needs
   doubling twice and every escape needs escaping twice. Put the prose in its own
   function and splice in the call.

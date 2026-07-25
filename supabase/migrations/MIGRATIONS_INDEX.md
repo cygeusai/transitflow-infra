@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (218 migrations
+The full, ordered migration history of the Transit & Flow backend (223 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -102,6 +102,10 @@ of what exists so nothing is silently dropped.
 | 217 | 20260725015210 | intake_sweep_reminder_ladder_and_expiry |
 | 218 | 20260725015721 | intake_phone_match_trailing_ten |
 | 219 | 20260725021308 | revenue_convention_and_marketing_roi |
+| 220 | 20260725023021 | revenue_linkage_sweep_and_audit |
+| 221 | 20260725023406 | fix_linkage_guard_arity |
+| 222 | 20260725023419 | fix_linkage_uuid_aggregate |
+| 223 | 20260725023458 | linkage_sweep_reentrant_temp_tables |
 
 > Note: rows are abbreviated for readability; `supabase db pull` writes every
 > migration in full. The complete authoritative list is the Supabase migration

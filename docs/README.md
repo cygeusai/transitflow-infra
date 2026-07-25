@@ -31,6 +31,7 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - [`RELIABILITY_INTEGRATION_WATCHDOG.md`](./RELIABILITY_INTEGRATION_WATCHDOG.md) — connector watchdog
 - [`IT_GOVERNANCE_GRC.md`](./IT_GOVERNANCE_GRC.md) — controls, access certification, SLOs
 - [`MARKETING_ROI_AND_REVENUE.md`](./MARKETING_ROI_AND_REVENUE.md) — collected-revenue convention, channel P&L
+- [`REVENUE_LINKAGE.md`](./REVENUE_LINKAGE.md) — invoice-to-job sweep, natural-key integrity, traceability
 
 ## Conventions
 - The database is the source of truth for access control (RLS).

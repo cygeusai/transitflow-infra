@@ -58,3 +58,7 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
 - Collected revenue is `total_amount - balance`. Never `total_amount`.
 - A migration that creates or replaces a function must CALL it in a `do $drive$`
   post-check and assert on the output. Inspecting the catalog is not verification.
+- A runbook is code. Every command a document gives an operator must be executed,
+  with the operator's credentials, before that document is published.
+- A `tf_*` name does not tell you whether the function writes. Read
+  `pg_get_functiondef` before putting any call in a runbook.

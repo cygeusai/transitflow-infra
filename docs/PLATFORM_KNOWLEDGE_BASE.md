@@ -58,14 +58,70 @@ Then, depending on what is red:
 select public.tf_security_scan();     -- five axes, gap_total should be 0
 select public.tf_queue_health();      -- lanes, orphans, stuck events
 select public.tf_scheduler_health();  -- pg_cron, per-job first-seen and lateness
-select public.tf_integration_health_report();  -- connector credentials and freshness
-select public.tf_data_quality_audit();         -- referential and convention integrity
+select public.tf_data_quality_audit();  -- referential and convention integrity
+
+-- connector credentials and freshness
+select provider, is_enabled, last_sync_status,
+       round(extract(epoch from (now() - last_synced_at))/3600, 1) as hours_since_sync
+from public.integration_settings
+where company_id = 'ff000000-0000-4000-b000-000000000001' and deleted_at is null
+order by last_synced_at desc nulls last;
 ```
 
+**Read the side-effect column before you paste anything.** Not every `tf_*`
+function is a read, and two of them are named as though they were.
+
+| Call | Side effects | Auth needed |
+| --- | --- | --- |
+| `tf_system_health(false)` | none with `false` | any |
+| `tf_security_scan()` | none | staff, or no JWT |
+| `tf_queue_health()` | none | staff, or no JWT |
+| `tf_scheduler_health()` | **writes** `cron_job_registry` | staff, or no JWT |
+| `tf_data_quality_audit()` | none | **staff JWT required** |
+| `tf_revenue_linkage_audit(90)` | none | **staff JWT required** |
+| `tf_marketing_roi(90)` | none | **staff JWT required** |
+| `tf_integration_health_report(...)` | **records an outage, opens a ticket** | not a diagnostic |
+| `tf_integration_watchdog(p_post)` | **writes regardless of `p_post`** | not a diagnostic |
+
+Three of those rows exist because someone tried to run this section as written
+and it did not survive contact. Each is worth knowing before 2am.
+
+**`tf_integration_health_report` is not a report.** Despite the name it is the
+*writer* the edge functions call to record a connector failure, and since
+migration 190 it opens a ClickUp ticket immediately. Its real signature is
+`(p_provider text, p_ok boolean, p_error_code text default 'reauth_required',
+p_http_status integer default 401, p_message text default null)`. A bare
+`select public.tf_integration_health_report();` raises `42883`, which is the
+lucky outcome. The unlucky outcome is an operator supplying plausible arguments
+to make the error go away and thereby injecting a fake outage into the health
+board and a real ticket into ClickUp. Use the `integration_settings` query above
+instead. It is a plain select and cannot do anything.
+
+**`tf_integration_watchdog(false)` is not a dry run.** `p_post` gates the Slack
+post and the alert-cadence stamp only. The self-heal pass, which resolves
+`integration_errors` rows and closes their tickets, and the escalation pass,
+which opens tickets for anything unresolved past 72h, both run either way. The
+parameter is honestly named; the danger is reading `false` as `dry_run` by
+analogy with `tf_link_revenue`. It is not that. Leave it to
+`tf-integration-watchdog-daily` unless you intend the writes.
+
+**`tf_scheduler_health()` writes, benignly.** It upserts every live `cron.job`
+into `cron_job_registry` to maintain the first-seen clock and deletes registry
+rows whose jobid is gone, so a recycled jobid cannot inherit a stale
+`first_seen_at`. Idempotent, safe to run repeatedly, but it is not a pure read
+and should not be described as one.
+
 `tf_system_health` and the operator functions above run as `postgres` or
-`service_role`. Several read models are staff-guarded and will answer
-`{"ok": false, "error": "forbidden"}` when called with no JWT. That is correct
-behaviour, not a fault. See *The guard model*.
+`service_role`. Several read models are staff-guarded. Most answer
+`{"ok": false, "error": "forbidden"}` when called with no JWT, but
+`tf_data_quality_audit` **raises** `P0001: not authorized` rather than returning
+a refusal, which aborts a multi-call statement. Run it on its own, from a staff
+session. That is correct behaviour, not a fault. See *The guard model*.
+
+**Run these as separate statements, one per call.** Postgres aborts an entire
+statement on the first error, so bundling five diagnostics into one
+`jsonb_build_object` means a single bad call costs you the other four results.
+That is exactly how the two defects above went unnoticed.
 
 ### Live board as of this writing
 
@@ -100,9 +156,10 @@ Routed by what you observe. Each row names the check to run first.
 | A ticket never appeared in ClickUp | ClickUp token expired; ticket row exists with `status='failed'` | `select * from auto_tickets where clickup_task_id is null` |
 | Nothing has synced from the field in hours | Housecall Pro webhook or hourly reconcile stalled | `tf_system_health(false)` → `housecall_pro.detail` |
 | A customer says they never got the prep text | Job-prep automation flag is off by design | `integration_settings.config->'automations'->>'job_prep'` |
-| A customer got a text they should not have | Autosend cutover timestamp not set before enabling | `config ->> 'intake_autosend_since'` |
+| A customer got a text they should not have | Autosend cutover timestamp stale, not refreshed before enabling | `config ->> 'intake_autosend_since'` |
 | Two customer records for one person | Dedup sweep has not run, or phones differ in format | `tf_merge_duplicate_customers(true)` (dry run) |
-| Scheduled report did not arrive in Slack | Cron fired but Slack connector degraded | `tf_scheduler_health()` then `tf_integration_health_report()` |
+| Scheduled report did not arrive in Slack | Cron fired but Slack connector degraded | `tf_scheduler_health()` then the `integration_settings` query above |
+| A `tf_*` call raises `42883` or does something unexpected | The name implies a read; the function is a writer | *The first ten minutes*, side-effect table |
 | Events piling up, nothing draining | Producer writing to a lane with no consumer | `tf_queue_health()` → `orphan_lanes[].reason` |
 | A staff user gets `forbidden` from an RPC | Function is `service_role`-only, not staff-callable | *The grant tiers* below |
 | A function raises `42501 permission denied` | Same as above: wrong grant tier for the caller | `information_schema.routine_privileges` |
@@ -423,6 +480,28 @@ multi-anchor patch.
 `control_key`, not `control_id`. Read `information_schema.columns` before
 writing the query; it costs one round trip and saves three.
 
+**A name that implies a read on a function that writes.**
+`tf_integration_health_report` sounds like a report and is a writer that opens a
+ticket. `tf_integration_watchdog(false)` looks like a dry run and mutates either
+way. Both were documented as safe diagnostics on the strength of their names.
+Fix: before putting any call in a runbook, read
+`pg_get_functiondef(oid)` and look for DML. Two functions on this platform were
+named badly enough to survive review; assume there is a third.
+
+**A boolean parameter assumed to be `dry_run`.** The platform has both
+conventions in play. `tf_link_revenue(p_dry_run boolean default true)` really is
+a dry run. `tf_integration_watchdog(p_post boolean default true)` gates only the
+outbound post, and `tf_system_health(p_post boolean default false)` gates only
+snapshot persistence. Same type, same position, three different meanings. Read
+the parameter *name*, not its type, and if the name is not `p_dry_run` do not
+assume the call is inert.
+
+**Refusal by `raise` rather than by return value.** Most staff-guarded read
+models return `{"ok": false, "error": "forbidden"}`. `tf_data_quality_audit`
+raises `P0001: not authorized` instead. The difference is invisible in a
+single-call test and fatal in a bundled statement, because a raise aborts every
+other call alongside it. Fix: run diagnostics one statement per call.
+
 **Misleading evidence.** A diagnostic that collapses two distinct causes into one
 label is worse than one that reports nothing, because it sends the operator
 somewhere specific and wrong. The orphan-lane reporter did exactly this before
@@ -433,7 +512,7 @@ diagnostic can be wrong in two different ways, it must say which one.
 
 ## The house rules
 
-Three rules, each of which exists because breaking it cost real time.
+Four rules, each of which exists because breaking it cost real time.
 
 **A migration that creates or replaces a function must drive that function in a
 post-check, not inspect it.** Migration 229 in this repo's ordinal series applied
@@ -451,6 +530,15 @@ batch is visible within the hour, because the watchdog and autoticket
 infrastructure raise it. Corrupted revenue is not visible at all, and by the time
 anyone notices, the P&L has been wrong for months and nobody can say since when.
 This will not always be convenient. That is the point.
+
+**A runbook is code, and untested code is wrong.** This document shipped with a
+first-ten-minutes block whose fourth line did not resolve, a function count off
+by one, and a safety instruction that told the operator to set a field that was
+already set. All three were caught by executing the document rather than
+proofreading it, on the first pass after publication. Every command a runbook
+gives an operator must be run, in the state and with the credentials the
+operator will have, before it is published. The `do $drive$` rule applies to
+prose exactly as it applies to migrations.
 
 ---
 
@@ -576,11 +664,18 @@ is currently **`false`**. That is the only thing standing between a test sweep
 and a text message to a live customer. Any testing of the intake path must use
 reserved fictional numbers, `(614) 555-0142` and `(614) 555-0143`.
 
-**Before that flag is ever set to `true`,** set
-`config ->> 'intake_autosend_since'` to the cutover timestamp. Without it,
-enabling autosend will back-text the entire existing book of jobs. This is an
-operator decision, correctly sequenced as: set the cutover timestamp, verify it
-reads back, then enable the flag. Never the other way round.
+**Before that flag is ever set to `true`,** refresh
+`config ->> 'intake_autosend_since'` to the actual cutover moment. The field is
+*not* empty, and that is the trap. It currently reads
+`2026-07-18T02:51:54.728504+00:00`, set during build-out and now a week stale.
+An operator who checks that the timestamp is present, sees a value, and enables
+the flag will back-text every job created since 2026-07-18. A stale cutover
+timestamp is more dangerous than a missing one, because a missing one looks
+wrong and a stale one looks done.
+
+The sequence is: set the cutover timestamp to `now()`, verify it reads back,
+then enable the flag. Never the other way round, and never on the strength of
+the field merely being populated.
 
 The intake path itself carries a send-guard ladder, a reminder ladder, and an
 expiry, documented in `JOB_PREP_INTAKE.md`. Phone matching uses the trailing-ten
@@ -689,7 +784,7 @@ Read live from the catalog, not counted by hand.
 | Tables with RLS enabled | 163 (100%) |
 | RLS policies | 574 |
 | Functions in `public` | 254 |
-| `tf_*` operator functions | 68 |
+| `tf_*` operator functions | 67 |
 | Views | 7 |
 | Enums | 80 |
 | Indexes | 645 |
@@ -738,6 +833,42 @@ subject-specific notes beside it in `docs/`:
 Notion carries the same material for non-engineers under **🧭 Operations Hub —
 SOPs & FAQs**, with persona-routed SOPs and FAQs. ClickUp carries the
 operational queues and the ticket surface.
+
+---
+
+## Verification log
+
+This document is driven, not proofread. Each pass runs every command it gives an
+operator, in the state and with the credentials that operator will have, and
+records what broke.
+
+**Pass 1, 2026-07-25, at migration 231.** Four defects found, all in the
+document, none in the database.
+
+| Claim as published | Live reality | Resolution |
+| --- | --- | --- |
+| `tf_integration_health_report()` is a first-ten-minutes read | raises `42883`; the function is a five-argument writer that opens a ticket | replaced with a plain `integration_settings` select; the trap documented |
+| `tf_integration_watchdog` implied safe to inspect | writes on both paths, `p_post` gates only the Slack post | annotated as not a diagnostic |
+| `tf_*` operator functions: 68 | 67 | corrected |
+| `intake_autosend_since` implied unset | set, and a week stale at `2026-07-18T02:51:54` | instruction changed from *set* to *refresh* |
+
+Everything else held exactly. `tf_system_health(false)` returned `degraded` on
+QuickBooks and ClickUp only, with all nine other components operational and
+their detail strings verbatim. `tf_security_scan()` returned five axes in the
+documented order, all zero, `gap_total: 0`. `tf_queue_health()` returned
+`operational`, ten registered lanes matching the published registry row for row,
+zero orphans, zero stuck. `tf_scheduler_health()` returned 36 jobs, all firing,
+zero stalled, zero failing. `tf_data_quality_audit()` returned zero on all six
+checks. `tf_revenue_linkage_audit(90)` and `tf_marketing_roi(90)` independently
+returned 83.5% and $10,721.31 from separately computed paths, which is the
+agreement that makes the number worth quoting. Every inventory figure but the
+one above matched. The `job_prep` flag reads `false`.
+
+The finding worth carrying forward: the three failures clustered entirely in the
+*first* section, the one an operator reaches first and trusts most. Sections
+written by transcribing live output were correct. The section written by
+reasoning about what an operator should run was not. Documentation drifts
+fastest where it is least examined and most load-bearing.
 
 ---
 

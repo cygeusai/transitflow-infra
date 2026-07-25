@@ -4,7 +4,7 @@ The single troubleshooting reference for the Transit & Flow backend. Written to
 be read at 2am by someone who did not build it.
 
 State captured 2026-07-25 against Supabase project `kjooyhvynkzuvsixsutt` at
-migration 248. Every number in this document was read out of the live database,
+migration 252. Every number in this document was read out of the live database,
 not remembered.
 
 ---
@@ -169,6 +169,11 @@ Routed by what you observe. Each row names the check to run first.
 | A function raises `42883 operator does not exist` | Type drift between a new column and an existing enum | *Convention drift* |
 | Owner portal shows another owner's property | RLS policy defect. Stop and treat as P0 | `pg_policies` for the table in question |
 | Health board shows "X unavailable" | The diagnostic itself is broken | Read the component's underlying function |
+| A customer in the demo tenant received a production-branded text | A sweep is missing its `company_id` predicate | read the sweep's `where` clause; migration 249 closed three, migration 250 closed two settings reads |
+| `tf_automation_readiness()` reports a note that contradicts the sweep | The migration changed the code and not the registry note | `tf_automation_note_drift()`; control `CM-NOTEDRIFT-022` |
+| `42601: too many parameters specified for EXECUTE` from a blast-radius call | The predicate ignores `$1` or `$2` | *Defect-pattern library*, "Blast-radius predicate arity" |
+| `42P10: no unique or exclusion constraint matching ON CONFLICT` | The arbiter guessed does not exist on that table | `select conname, pg_get_constraintdef(oid) from pg_constraint where conrelid='<table>'::regclass` |
+| `42601: too many parameters specified for RAISE` in a freshly patched function | A `%%` was written inside an anchored `replace()` payload | *Defect-pattern library*, "No doubling layer inside a catalog patch" |
 
 ---
 
@@ -494,6 +499,10 @@ time.
 | 12 | Control evidence integrity | an automated control must be named in both the status CASE and the evidence CASE | `tf_controls_evaluate` wiring assertion in every control migration |
 | 13 | Manual control attestation | manual controls are attested by a human through `tf_control_attest`, never auto-passed | `it_controls.last_attested_at` split from `last_evaluated_at` |
 | 14 | Detection rules as data | patterns live in tables, not in checker bodies | `tf_function_safety_patterns`, `tf_boolean_param_conventions`, `tf_automation_registry`, `tf_function_grant_tiers` |
+| 15 | Tenant scoping in sweeps | every sweep filters `company_id = v_company`, and the enable flag it reads is scoped the same way | migration 249 for the sweeps, migration 250 for the settings reads; the reviewer's check is `pg_get_functiondef` |
+| 16 | Automation bounding | every automation declares `bounded_by` as one of `cutover`, `natural_window`, `unbounded`, `edge_function` | CHECK constraint on `tf_automation_registry.bounded_by`; `tf_automation_arm` refuses an `unbounded` automation with a non-zero blast radius |
+| 17 | Blast-radius predicate arity | every predicate references both `$1` (cutover) and `$2` (company), using the visible tautology where there is no cutover | `tf_automation_blast_radius` executes `using coalesce(v_since, now()), v_company`; a predicate that ignores either one raises at call time |
+| 18 | Registry note currency | the note is part of the change, not documentation of it, and is rewritten in the same transaction as the sweep | `tf_automation_note_drift`, control `CM-NOTEDRIFT-022`, ticket key `safety:note_drift` |
 
 The countermeasure that keeps working is the same every time: express the
 convention in the database, on the *normalised* form of the value, so violation
@@ -502,7 +511,7 @@ is impossible rather than merely discouraged.
 Convention documented in prose is a convention that will drift. Convention
 expressed as a unique index is a convention that cannot.
 
-**Conventions 8 through 14 share a shape worth naming.** Each one is a table of
+**Conventions 8 through 18 share a shape worth naming.** Each one is a table of
 rules, a function that applies them, a checker that compares live state to the
 table, a GRC control that fails when they disagree, and an auto-ticket key that
 puts the disagreement in front of a human. Five parts. When a new convention is
@@ -622,11 +631,82 @@ somewhere specific and wrong. The orphan-lane reporter did exactly this before
 v7: it labelled a registered-but-undrained lane as `"registered": false`. If a
 diagnostic can be wrong in two different ways, it must say which one.
 
+**The unscoped sweep.** A sweep selects its candidates from a shared table with
+no `company_id` filter, or reads the enable flag from `integration_settings`
+without scoping that read either. It is invisible while the flag is off, which
+is exactly the window in which nobody looks at it, and it becomes a cross-tenant
+send the instant the flag flips. Migration 249 found three of these and measured
+the exposure before fixing them: three jobs existed outside the production
+tenant, all three matched `tf_review_request_sweep`'s candidate predicate, so
+arming `review_requests` would have texted those customers from the production
+number under the Transit & Flow brand. Migration 250 then found two *settings*
+reads the first pass had missed, in sweeps whose candidate query was already
+correctly scoped. Fix: scope the candidate query and the flag read, in the same
+migration, and re-read `pg_get_functiondef` afterwards rather than trusting the
+patch. Reviewer's rule: a sweep is not scoped until both halves are.
+
+**Blast-radius predicate arity.** `tf_automation_blast_radius` runs every
+registered predicate as `execute ... using coalesce(v_since, now()), v_company`,
+so `$1` is the cutover timestamp and `$2` is the company id. PL/pgSQL raises
+`42601: too many parameters specified for EXECUTE` when a predicate references
+fewer placeholders than the `using` clause supplies, which means a predicate that
+legitimately has no cutover bound still has to mention `$1`. Fix, and it must be
+visible rather than clever: append
+`and ($1::timestamptz is not null or $1::timestamptz is null)`. It is a tautology
+on purpose. Silently dropping the parameter is the failure this shape prevents.
+
+**No doubling layer inside a catalog patch.** Ordinary generated SQL has two
+levels of quoting, so authors learn to double things. An anchored catalog patch
+has only one: the `replace()` payload is written into the function source
+literally. A `%%` intended as an escaped percent therefore lands as a literal
+`%%` in the body, PL/pgSQL reads it as an escaped percent consuming zero
+arguments, and the function raises `42601: too many parameters specified for
+RAISE` on its first call. Use a single `%` per argument inside a patch payload.
+
+**The inverse quoting rule inside dollar quotes.** Inside `$j$ ... $j$` a single
+quote is literal and must **not** be doubled. Doubling it stores two apostrophes
+in the text. This is the exact inverse of the ordinary quoted-string rule, and
+the two rules are usually a few lines apart in the same migration, which is why
+this keeps happening. Caught pre-flight in migration 251 by reading the payload
+back before applying it.
+
+**The guessed ON CONFLICT arbiter.** `it_controls` carries `UNIQUE (control_key)`
+and `PRIMARY KEY (id)`, not the composite `(company_id, control_key)` that the
+multi-tenant shape of the table suggests. Writing the plausible composite raises
+`42P10: there is no unique or exclusion constraint matching the ON CONFLICT
+specification`, and it raises it at apply time, so it costs a migration attempt
+rather than corrupting anything. Fix: `select conname, pg_get_constraintdef(oid)
+from pg_constraint where conrelid = '<table>'::regclass` before writing an upsert
+against a table the current session has not already written to. This is the same
+discipline as reading `information_schema.columns` before writing a select, and
+it is the same failure mode: reasoning about the schema instead of reading it.
+
+**A register that drifts inside the migration that creates the drift.**
+Migration 251 created `tf_automation_note_drift` and did not declare it in
+`tf_function_registry`. `tf_function_safety_audit()` reported
+`undeclared_total: 1` within minutes and `CM-FNDRIFT-018` was working exactly as
+designed, which is the good news and the whole point of the register. The bad
+news is that the migration should never have shipped a function without its
+declaration. Fix, now a house rule: a migration that creates a function declares
+it in `tf_function_registry` and `tf_function_grant_tiers` in the same
+transaction. Closed by migration 252; `undeclared_total` is back to 0.
+
+**Projecting keys from a payload nobody enumerated.** Four post-migration
+measurement queries in a single sitting returned nulls because they selected
+JSON keys that do not exist: `total`, `write_total`, `read_total` and
+`misleading_name_total` on `tf_function_safety_audit()`, where the counts
+actually live under a nested `totals` object and the key is `misleading_total`;
+and `automation_key` and `armed` on the readiness payload, where the real keys
+are `key` and `enabled`. A null is not an error, so this class of mistake reads
+as "zero" rather than as "wrong question", which makes it more dangerous than a
+syntax error. Fix: `select jsonb_object_keys(<payload>)` once, then project. Same
+lesson as the column-name assumption, one layer up.
+
 ---
 
 ## The house rules
 
-Seven rules, each of which exists because breaking it cost real time.
+Nine rules, each of which exists because breaking it cost real time.
 
 **A migration that creates or replaces a function must drive that function in a
 post-check, not inspect it.** Migration 229 in this repo's ordinal series applied
@@ -679,6 +759,26 @@ that function. The same rule in a table can be read, queried, added to and
 audited by an operator with no context. This is why
 `tf_function_safety_patterns`, `tf_boolean_param_conventions`,
 `tf_automation_registry` and `tf_function_grant_tiers` exist as data.
+
+**Declare what you create, in the same transaction that creates it.** A
+migration that adds a function must add its `tf_function_registry` row and call
+`tf_apply_grant_tier` before it commits. Migration 251 did not, and the register
+was in drift for the eleven minutes it took `tf_function_safety_audit` to notice.
+The audit catching it is not a defence of the omission. It is the reason the
+omission was survivable, which is a different thing, and relying on the second
+one is how a platform accumulates the first.
+
+**Induce the failure and force the rollback.** When the condition a guard
+protects against does not exist in live data, the guard cannot be observed
+refusing by simply calling it. Insert a synthetic row that forces the condition,
+observe the refusal, delete the fixture, then assert two things: that the fixture
+did not survive, and that the row counts are back where they started. Wrap the
+attempt in a subtransaction that raises its own sentinel exception on success, so
+the mutation rolls back on every code path including the one where the guard
+fails to fire. Migration 252 proved `CM-NOTEDRIFT-022` this way: clean baseline,
+induced drift, control observed at `failing`, fixture deleted, control observed
+back at `passing`, registry back at 13 rows. Without the induced failure, all
+that migration would have proved is that a control can return `passing`.
 
 ---
 
@@ -813,15 +913,15 @@ enables the flag will back-text every job created since 2026-07-18. A stale
 cutover timestamp is more dangerous than a missing one, because a missing one
 looks wrong and a stale one looks done.
 
-**And `job_prep` is not the only one.** Three automations carry a populated,
+**And `job_prep` is not the only one.** Four automations carry a populated,
 stale cutover timestamp right now, each of which would back-contact on arming:
 
 | Automation | Cutover key | Stale by | Rows it would touch on the first tick |
 | --- | --- | --- | --- |
-| `job_prep` | `intake_autosend_since` | 176 h | **17** |
+| `job_prep` | `intake_autosend_since` | 177 h | **17** |
+| `marketplace_dispatch` | `marketplace_dispatch_since` | 173 h | **19** |
 | `review_requests` | `review_requests_since` | 172 h | **7** |
-| `ai_booking` | `ai_agent.booking_since` | 165 h | 0 today, but the sweep POSTs to an edge function with no auth guard of its own and caps at five leads per tick, so the real exposure is the backlog across successive ticks |
-| `marketplace_dispatch` | `marketplace_dispatch_since` | 172 h | not customer-reaching, but the predicate is still untranscribed |
+| `ai_booking` | `ai_agent.booking_since` | 166 h | 0 today, but the sweep POSTs to an edge function with no auth guard of its own and caps at five leads per tick, so the real exposure is the backlog across successive ticks |
 
 Do not read those numbers from this table when it matters. Read them live:
 
@@ -831,7 +931,27 @@ select public.tf_automation_readiness();
 
 That returns, per automation, the enabled state, the cutover path and value, the
 cutover age in hours, the computed blast radius, and a verdict. Today: **13
-automations, 0 armed, 0 ready, 10 blocked, 3 stale_cutover.**
+automations, 0 armed, 6 ready, 4 stale_cutover, 3 blocked.**
+
+That is a material change from the picture at migration 248, when the same call
+returned 0 ready and 10 blocked. Migration 250 transcribed the seven missing
+blast-radius predicates into `tf_automation_registry` and added the bounding
+model, which moved six automations from `blocked_no_predicate` to a real verdict
+and gave `marketplace_dispatch` a measured radius of 19 rows where it previously
+had none. Blocked no longer means "we have not looked." It now means only one
+thing: the work happens in an edge function and SQL cannot size it.
+
+| Verdict | Count | Automations |
+| --- | --- | --- |
+| `ready` | 6 | `appt_reminders` (1 row), `cx_first_response`, `cx_sequences`, `estimate_followups`, `eta_reminders`, `late_penalty_enforcement` (all 0) |
+| `stale_cutover` | 4 | `job_prep` (17), `marketplace_dispatch` (19), `review_requests` (7), `ai_booking` (0) |
+| `blocked_no_predicate` | 2 | `live_connect`, `missed_call_textback` |
+| `blocked_no_predicate_low_risk` | 1 | `push_estimates_to_hcp` |
+
+`ready` means the readiness checks pass, not that arming is a good idea. It is
+the floor, not the recommendation. `AUTOMATION_ARMING.md` carries the full
+registry schema, the bounding model, the predicate contract and the refusal
+classes; read it before arming anything that reaches a customer.
 
 ### The arming procedure
 
@@ -861,16 +981,30 @@ Never arm on the strength of a field merely being populated. Never arm two
 automations in the same window; if something goes out that should not have, you
 want exactly one candidate.
 
-**Ten automations are blocked and cannot be armed at all today**, because their
-blast-radius predicate has not been transcribed into `tf_automation_registry`.
-That is deliberate. Of those, three, `live_connect`, `missed_call_textback` and
-`push_estimates_to_hcp`, are implemented entirely in edge functions and no
-`tf_*` function references their key, so a SQL blast radius cannot be computed
-for them in principle. They stay blocked with that explanation rather than being
-waved through. The remaining seven, `cx_sequences`, `cx_first_response`,
-`eta_reminders`, `appt_reminders`, `estimate_followups`,
-`late_penalty_enforcement` and `marketplace_dispatch`, are blocked pending
-transcription and are the next tranche of work.
+**Three automations are blocked and cannot be armed at all today**, and they are
+the three that cannot in principle be sized from SQL. `live_connect`,
+`missed_call_textback` and `push_estimates_to_hcp` are implemented entirely in
+edge functions; no `tf_*` function references their key, so there is nothing for
+a blast-radius predicate to select from. `tf_automation_registry.bounded_by`
+records this as `edge_function` rather than leaving it blank, and
+`push_estimates_to_hcp` carries the softer `blocked_no_predicate_low_risk`
+verdict because it pushes to Housecall Pro rather than to a customer. All three
+stay blocked with that explanation rather than being waved through. Arming any of
+them requires instrumenting the edge function to report what it would send, which
+is the next tranche of work on this axis.
+
+The other seven were blocked for a different and less honourable reason until
+migration 250: nobody had transcribed their predicate. That is now closed.
+
+**Before arming, read the registry note, and treat a stale note as a blocker.**
+`tf_automation_readiness()` projects `tf_automation_registry.notes` into its
+output, which makes that note the last piece of prose an operator reads before
+flipping a customer-reaching flag. A note that describes a sweep the migration
+already changed is worse than no note, because it is read at the exact moment
+trust is highest. `tf_automation_note_drift()` compares each note against the
+live catalog on four rules, control `CM-NOTEDRIFT-022` fails when they disagree,
+and `safety:note_drift` puts it in front of a human. `drift_count` reads **0**
+today.
 
 The intake path itself carries a send-guard ladder, a reminder ladder, and an
 expiry, documented in `JOB_PREP_INTAKE.md`. Phone matching uses the trailing-ten
@@ -931,8 +1065,18 @@ from public.auto_tickets order by created_at;
 
 ### GRC controls
 
-17 controls, 15 `passing`, 2 `attention`: AC-MFA-003 and DP-PITR-007, which are
-owner actions 3 and 4 above. Evaluated monthly by `tf-controls-evaluate-monthly`.
+22 controls, 20 `passing`, 2 `attention`, 0 `failing`. The two in `attention` are
+AC-MFA-003 and DP-PITR-007, which are owner actions 3 and 4 above. Evaluated
+monthly by `tf-controls-evaluate-monthly`, and on demand by
+`tf_controls_evaluate()`, which is a writer.
+
+The five most recently added controls are the convention-enforcement tier:
+`AC-DEFN-017` (definer authorization), `CM-FNDRIFT-018` (function register
+drift), `CM-AUTOARM-020` (out-of-band arming), `CM-GRANT-021` (grant tier drift)
+and `CM-NOTEDRIFT-022` (registry notes agree with the catalog). Each was observed
+failing under an induced defect inside the migration that created it, then
+observed recovering. A control that has only ever been seen passing is not
+evidence of anything.
 
 ---
 
@@ -980,33 +1124,43 @@ Read live from the catalog, not counted by hand.
 
 | | Count |
 | --- | --- |
-| Migrations applied | 248 |
+| Migrations applied | 252 |
 | Base tables in `public` | 170 |
 | Tables with RLS enabled | 170 (100%) |
 | RLS policies | 581 |
-| Functions in `public` | 269 |
-| `tf_*` operator functions | 78 |
-| `tf_*` functions declared in `tf_function_registry` | 78 (100%) |
-| Functions with a declared grant tier | 12 |
+| Functions in `public` | 271 |
+| `tf_*` operator functions | 80 |
+| `tf_*` functions declared in `tf_function_registry` | 80 (100%) |
+| Functions with a declared grant tier | 14 |
 | Views | 7 |
 | Enums | 80 |
 | Indexes | 654 |
 | Active pg_cron jobs | 37 |
 | Edge functions | 37 |
-| GRC controls | 21 |
-| Controls passing / attention / failing | 19 / 2 / 0 |
+| GRC controls | 22 |
+| Controls passing / attention / failing | 20 / 2 / 0 |
+| Automations registered | 13 |
 | Automations armed | 0 of 13 |
+| Automation registry note drift | 0 |
 
 170 of 170 tables carry RLS. That is the number to re-check after any migration
 that creates a table, because a new table without RLS is the single fastest way
 to open a cross-tenant leak, and `rls_disabled_tables` is the axis that catches
 it.
 
-78 of 78 `tf_*` functions are declared in `tf_function_registry`. That is the
+80 of 80 `tf_*` functions are declared in `tf_function_registry`. That is the
 second number to re-check, because an undeclared function is one whose
 side-effect class nobody has stated, and `tf_function_safety_audit()` will open a
 ticket under `safety:function_drift` within fifteen minutes if the two counts
-diverge.
+diverge. It did exactly that between migrations 251 and 252; see the
+defect-pattern library.
+
+Fourteen of the eighty carry a declared grant tier. That number is deliberately
+smaller than eighty and is not a coverage gap: a tier is declared where the
+intended reachability is not obvious from the function's role, and
+`tf_grant_tier_audit()` enforces the declared ones at `violation_total: 0`.
+Widening the declared set is cheap and is the standing recommendation whenever a
+function's audience is argued about twice.
 
 The two controls in `attention` are both owner actions rather than code defects:
 `AC-MFA-003`, one privileged account without MFA, and `DP-PITR-007`,
@@ -1064,7 +1218,8 @@ subject-specific notes beside it in `docs/`:
 - `REVENUE_LINKAGE.md` — invoice-to-job sweep, natural-key integrity
 - `SECURITY_GUARDS_AND_QUEUE_LANES.md` — the guard sweep, AC-DEFN-017, lane registry
 - `FUNCTION_GRANT_TIERS.md` — the three-tier grant model, the Supabase default-privileges trap, `CM-GRANT-021`
-- `MIGRATIONS_INDEX.md` — the ordered migration manifest
+- `AUTOMATION_ARMING.md` — the automation registry, the bounding model, the blast-radius predicate contract, the arming sequence and its refusal classes, `CM-NOTEDRIFT-022`
+- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom
 
 Notion carries the same material for non-engineers under **🧭 Operations Hub —
 SOPs & FAQs**, with persona-routed SOPs and FAQs. ClickUp carries the
@@ -1134,6 +1289,52 @@ is the same one the database uses on itself: where this document states a count,
 it now also states the query that produces it, so the next reader can refute it
 in one round trip instead of trusting it.
 
+**Pass 3, 2026-07-25, at migration 252.** Four migrations landed between pass 2
+and pass 3, and unlike the previous two passes the defects this time were **not
+all in the document**. Two were live defects in the database, found by reading
+function bodies rather than by running the runbook, and both were
+customer-reaching.
+
+| Claim as published | Live reality | Resolution |
+| --- | --- | --- |
+| Sweeps implied tenant-safe because the platform is multi-tenant by construction | **three sweeps carried no `company_id` predicate**; 3 jobs exist outside the production tenant and all 3 matched `tf_review_request_sweep`'s candidates, so arming `review_requests` would have texted them under the Transit & Flow brand | migration 249 scoped all three, plus a guard on `tf_ai_booking_kickoff_sweep`; migration 250 scoped two further *settings* reads the first pass missed |
+| `tf_late_penalty_sweep` enable flag read as `coalesce(..., true)` | defaulted to **enabled** when the key was absent, which is the wrong side of the boolean-default convention (#9) | flipped to `coalesce(..., false)` in migration 249 |
+| 10 automations blocked, 3 stale, 0 ready | after transcription: **6 ready, 4 stale_cutover, 3 blocked**, and `marketplace_dispatch` has a measured radius of **19 rows** where it previously reported none | migration 250 transcribed seven predicates and added the four-value bounding model; arming section rewritten against the live verdicts |
+| Registry notes treated as documentation | a note that contradicts the sweep is read at the moment trust is highest | `tf_automation_note_drift()` (251) and control `CM-NOTEDRIFT-022` (252); `drift_count` 0 |
+| Migrations 248, functions 78, tiers 12, controls 21 | 252 / 80 / 14 / 22 | every inventory row re-read from the catalog |
+| GRC controls section said 17 controls, 15 passing | 22 controls, 20 passing, 2 attention, 0 failing | corrected, and the convention-enforcement tier named explicitly |
+
+Three defects were found in the *authoring* rather than in the document or the
+database, and they are recorded in the defect-pattern library because they will
+recur: a guessed `ON CONFLICT` arbiter that cost one migration attempt
+(`it_controls` keys on `control_key` alone, not the composite), four measurement
+queries that projected JSON keys nobody had enumerated and returned nulls that
+read like zeros, and a function created in migration 251 without its
+`tf_function_registry` row. The last one is the most instructive of the three:
+`CM-FNDRIFT-018` caught it within minutes, which is the register working exactly
+as designed, and it is still a defect that should not have shipped.
+
+Everything re-measured this pass agreed on the second reading:
+`tf_function_safety_audit()` returned 80 functions, 54 writers, 26 reads, 6
+transitive writers, 17 documented diagnostics, `undeclared_total` 0, `drift` 0,
+`stale` 0, diagnostic violations 0, misleading names 7. `tf_grant_tier_audit()`
+returned `violation_total: 0` across 14 declared tiers.
+`tf_automation_note_drift()` returned `drift_count: 0`. All thirteen automation
+flags read `false`, re-asserted inside migrations 250, 251 and 252 rather than
+merely observed afterwards.
+
+The finding worth carrying forward is the one that changed this pass's character.
+Passes 1 and 2 found stale numbers. Pass 3 found **unarmed hazards**: code paths
+that were correct-looking, currently inert, and would have been wrong the instant
+someone flipped a flag. Neither would have surfaced through any command in the
+runbook, because the runbook exercises the system in its current state and these
+defects only exist in a state nobody has entered yet. The countermeasure is not a
+better runbook. It is the arming procedure itself, which forces a blast-radius
+measurement and a note read before the state changes, and it is the reason
+`AUTOMATION_ARMING.md` exists as a separate document rather than as a section
+here. **A system verified only in the state it is in has been verified for the
+one state that is not risky.**
+
 ---
 
 ## The pattern, stated plainly
@@ -1151,3 +1352,13 @@ write time, or make it loud at read time. Never let it be quiet.
 
 A system that fails loudly can be operated by someone who has never seen it
 before. That is the actual goal of this document.
+
+Pass 3 added one clause to that observation. The most expensive disagreements are
+not always the ones happening now. Some are dormant, sitting in a code path that
+is correct in every state the system has ever been in and wrong in the first
+state someone puts it in deliberately. A sweep with no tenant predicate is not a
+bug until an operator arms it, and by then the text messages have already gone
+out. Loud failure is necessary and not sufficient. The other half is measuring
+the blast radius *before* the state changes, which is why arming is a procedure
+with refusals rather than an `update` statement, and why every automation on this
+platform must declare how it is bounded before it can be armed at all.

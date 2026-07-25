@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (248 migrations
+The full, ordered migration history of the Transit & Flow backend (252 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -131,7 +131,16 @@ of what exists so nothing is silently dropped.
 | 246 | 20260725105218 | boolean_default_hazard_remediation |
 | 247 | 20260725110148 | grant_tier_remediation |
 | 248 | 20260725111529 | grant_tier_drift_control |
+| 249 | 20260725113932 | sweep_tenant_scoping_and_ai_booking_guard |
+| 250 | 20260725115002 | automation_blast_radius_transcription_and_bounding_model |
+| 251 | 20260725115531 | automation_registry_note_drift_checker |
+| 252 | 20260725120338 | note_drift_control_and_register_reconciliation |
 
+> **Migrations 249 through 252 are checked into this directory in full**, as
+> `<version>_<name>.sql`. They are the first migrations stored here verbatim
+> rather than abbreviated to a row. Read them as worked examples of the anchored
+> catalog-patch idiom and of the observed-refusal proof pattern. See
+> `docs/AUTOMATION_ARMING.md` for what they change and why.
 
 > **Ordinal reconciliation.** Ordinals here are the true
 > `row_number() over (order by version)`. Some `rationale` strings stored inside

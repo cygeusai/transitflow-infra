@@ -43,6 +43,7 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - [`REVENUE_LINKAGE.md`](./REVENUE_LINKAGE.md) — invoice-to-job sweep, natural-key integrity, traceability
 - [`SECURITY_GUARDS_AND_QUEUE_LANES.md`](./SECURITY_GUARDS_AND_QUEUE_LANES.md) — definer-guard axis, `AC-DEFN-017`, queue lane registry, orphan reason codes
 - [`FUNCTION_GRANT_TIERS.md`](./FUNCTION_GRANT_TIERS.md) — the three-tier `EXECUTE` model, the Supabase default-privileges trap, `tf_apply_grant_tier`, `CM-GRANT-021`
+- [`AUTOMATION_ARMING.md`](./AUTOMATION_ARMING.md) — **read before arming anything that reaches a customer.** The thirteen-automation registry, the four-value bounding model, the blast-radius predicate contract, the eight-step arming sequence and its five refusal classes, and the copy-paste arm/disarm/audit runbook
 
 ## Interactive artifacts (this folder)
 Self-contained HTML. Open directly in a browser, no build step, no network.
@@ -83,3 +84,54 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
   function and splice in the call.
 - Automation flags flip only through `tf_automation_arm`. A direct `update` on
   `integration_settings` is detected as out-of-band and treated as an incident.
+- Every sweep carries a company predicate. A sweep that scans a shared table
+  with no `company_id = v_company` filter is a cross-tenant send waiting for the
+  flag to flip, and the enable flag it reads must be scoped the same way.
+  Migration 249 closed three such sweeps; migration 250 closed two more settings
+  reads the first pass missed.
+- Every automation declares how it is bounded. `tf_automation_registry.bounded_by`
+  takes one of four values: `cutover` (a config key pins the start),
+  `natural_window` (the predicate has a moving time bound of its own),
+  `unbounded` (neither, so the first tick processes all history), or
+  `edge_function` (the work happens outside Postgres and SQL cannot size it).
+  `tf_automation_arm` refuses to arm an `unbounded` automation while its blast
+  radius is non-zero. See `AUTOMATION_ARMING.md`.
+- A blast-radius predicate must reference **both** `$1` and `$2`. The registry
+  executes every predicate as `using coalesce(v_since, now()), v_company`, and
+  PL/pgSQL raises `too many parameters specified for EXECUTE` if a predicate
+  ignores one. Where a sweep has no cutover bound, reference `$1` through the
+  visible tautology `and ($1::timestamptz is not null or $1::timestamptz is null)`
+  rather than dropping it.
+- The registry note is part of the change, not documentation of it. A migration
+  that alters a sweep, a predicate or a bounding must rewrite the matching
+  `tf_automation_registry.notes` in the same transaction. The note is projected
+  into `tf_automation_readiness()` and is the text an operator reads at the
+  moment they decide whether to arm a customer-reaching automation.
+  `tf_automation_note_drift()` and control `CM-NOTEDRIFT-022` fail when a note
+  contradicts the catalog.
+- A migration that creates a function must declare it in `tf_function_registry`
+  and `tf_function_grant_tiers` in the same migration. Migration 251 created
+  `tf_automation_note_drift` without declaring it, and `tf_function_safety_audit`
+  reported `undeclared_total = 1` within minutes. That is `CM-FNDRIFT-018`
+  working, but the register should never have drifted in the first place.
+- Prove a guard by inducing the failure and forcing the rollback. When the
+  trigger condition does not exist in live data, insert a synthetic row that
+  forces it, observe the refusal, then delete the fixture. Wrap the attempt in a
+  subtransaction that raises its own sentinel exception on success, so the
+  mutation rolls back under every code path, and assert afterwards that the
+  fixture did not survive and the row count is back where it started.
+- Inside an anchored catalog patch there is **no format-string doubling layer**.
+  A `%%` written into a `raise` message inside a `replace()` payload lands as a
+  literal `%%` in the function source, which PL/pgSQL reads as an escaped percent
+  consuming zero arguments, and the function then fails with
+  `42601: too many parameters specified for RAISE`. Use a single `%` per argument.
+- Inside a dollar-quoted literal (`$j$ ... $j$`) single quotes are **literal and
+  must not be doubled**. Doubling produces two literal apostrophes in the stored
+  text. This is the exact inverse of the ordinary quoted-string rule, and it is
+  easy to get wrong when moving a JSON payload between the two forms.
+- Name the real arbiter in `on conflict`. `it_controls` carries
+  `UNIQUE (control_key)`, not `(company_id, control_key)`; guessing the composite
+  raises `42P10: there is no unique or exclusion constraint matching the ON
+  CONFLICT specification`. Query `pg_constraint` before writing an upsert against
+  a table this session has not already written to, the same way you query
+  `information_schema.columns` before writing a select.

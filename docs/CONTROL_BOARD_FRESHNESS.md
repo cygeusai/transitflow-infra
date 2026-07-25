@@ -236,7 +236,9 @@ wrong place. It aborts the migration.
                 "status_case_length": 3217, "evaluator_def_length": 19742}}
 ```
 
-Register: **27 controls, 24 passing, 3 attention, 0 failing.**
+Register: **27 controls, 24 passing, 3 attention, 0 failing.** (Migrations 307
+through 309 subsequently took this to **28 controls, 25 passing, 3 attention, 0
+failing**, with `automated_total` at 22.)
 
 The three on attention are unchanged and all are owner actions or intentional:
 `AC-PRIV-002` (one anon-exposed definer function carrying a live exemption),

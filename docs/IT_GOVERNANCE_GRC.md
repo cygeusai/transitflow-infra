@@ -7,10 +7,12 @@ Transit & Flow, mapped to **NIST CSF**, **SOC 2**, and **CIS Controls v8**.
 
 | Object | Purpose |
 |--------|---------|
-| `it_controls` | Controls register (**27 controls** as of migration 306) with framework mapping, owner, status, evidence. Keyed by `control_key`, unique |
-| `tf_controls_evaluate()` | Re-scores automated controls from live signals (security scan, grant-tier audit, function-safety audit, guard-detection audit, signal coverage, cron presence, MFA gaps, data-quality). Takes **no arguments** |
-| `tf_controls_signal_coverage()` | Verifies, for a declared roster of ten checkers, that each one declares its axes, that every declared axis is read by `tf_controls_evaluate` via the strict counter-read needle, that every `tf_*` callee of the evaluator is on the roster, and that every checker's refusal flag is honoured. Added migration 285 over one checker, generalised to the full roster by migration 304, read by `CM-SIGNALCOV-026` since 287 |
+| `it_controls` | Controls register (**28 controls** as of migration 309) with framework mapping, owner, status, evidence. Keyed by `control_key`, unique |
+| `tf_controls_evaluate()` | Re-scores automated controls from live signals (security scan, grant-tier audit, function-safety audit, guard-detection audit, signal coverage, board freshness, declaration enforcement, cron presence, MFA gaps, data-quality). Takes **no arguments** |
+| `tf_controls_signal_coverage()` | Verifies, for a declared roster of eleven checkers, that each one declares its axes, that every declared axis is read by `tf_controls_evaluate` via the strict counter-read needle, that every `tf_*` callee of the evaluator is on the roster, and that every checker's refusal flag is honoured. Added migration 285 over one checker, generalised to the full roster by migration 304, read by `CM-SIGNALCOV-026` since 287 |
 | `tf_controls_board()` | Publishes the age of the register, names every automated control the evaluator has no status branch for, and names every branch that asserts a status literal instead of computing one. Folds all three into `authoritative`. Added migration 288, extended 289, read by `CM-BOARDFRESH-027` since 290 |
+| `tf_declaration_enforcement_audit()` | Reports whether the `tf_require_function_declaration` event trigger exists and is enabled, whether the pending queue holds residue, and whether any `public.tf_*` function lacks a `tf_function_registry` row. Folds all four into `enforcement_gap_total`. Added migration 308, read by `CM-FNDECL-028` since 309 |
+| `tf_declaration_pending` | Transient queue. Holds a row only between the creation of an undeclared `public.tf_*` function and the commit of the transaction that created it. Empty outside a transaction by construction |
 | `access_reviews` | Access certification snapshots with findings |
 | `tf_access_review()` | Snapshots accounts/roles/MFA/last-sign-in; flags MFA gaps, stale, terminated-active, SoD |
 | `service_slos` | SLO definitions (availability, security posture, integration reliability) |
@@ -30,30 +32,37 @@ Transit & Flow, mapped to **NIST CSF**, **SOC 2**, and **CIS Controls v8**.
 All GRC tables enforce RLS (internal-staff read; writes via SECURITY DEFINER
 functions / service_role). All GRC functions are SECURITY DEFINER with pinned
 `search_path` and are executable only by `service_role` (no anon, no
-authenticated), except `tf_controls_signal_coverage()` and
-`tf_controls_board()`, which are `staff` tier and each carry the
+authenticated), except `tf_controls_signal_coverage()`, `tf_controls_board()` and
+`tf_declaration_enforcement_audit()`, which are `staff` tier and each carry the
 `user_is_internal_staff` predicate in the function body as that tier requires.
 
 Post-deploy `tf_security_scan()` reads `ok: true`, `integrity_total: 0`,
-`gap_total: 2` over a declared population of 174 tables and 120 definer
-functions. The two are `anon_secdef_nonpublic: 1`, an intentional public surface
-with a live exemption row, and `rls_enabled_no_policy: 1`, which is
-`studio_events_prelaunch_archive`. That table has RLS on, zero policies, and an
-ACL with no client-role grants at all, so no client role can reach it. The
-decomposed axis `rls_enabled_no_policy_reachable` reads **0**, and that is the
-number `AC-RLS-001` weighs. Both numbers stay in the control's evidence so the
-correction is auditable rather than silent.
+`gap_total: 3` over a declared population of 175 tables and 123 definer
+functions. The three are `anon_secdef_nonpublic: 1`, an intentional public surface
+with a live exemption row, and `rls_enabled_no_policy: 2`, which is
+`studio_events_prelaunch_archive` and `tf_declaration_pending`. Both tables have
+RLS on, zero policies, and an ACL with no client-role grants at all, so no client
+role can reach either. The decomposed axis `rls_enabled_no_policy_reachable` reads
+**0**, and that is the number `AC-RLS-001` weighs. Both numbers stay in the
+control's evidence so the correction is auditable rather than silent.
 
-## Current posture (2026-07-25, after migration 290)
+`tf_declaration_pending` joined that axis in migration 307. It is the transient
+queue behind declaration enforcement, RLS was enabled on it automatically by the
+`ensure_rls` event trigger, and it was deliberately **not** given a suppressing
+exemption. A standing exemption over a table no role can reach suppresses nothing
+today and hides the finding on the day somebody grants it to `authenticated`,
+which is the retired-exemption rule from migration 282.
+
+## Current posture (2026-07-25, after migration 309)
 
 `tf_controls_evaluate()` reads:
 
 ```json
-{"total": 27, "manual": 0, "failing": 0, "passing": 24, "attention": 3,
- "automated": 21, "manual_controls": 6, "manual_never_attested": 6}
+{"total": 28, "manual": 0, "failing": 0, "passing": 25, "attention": 3,
+ "automated": 22, "manual_controls": 6, "manual_never_attested": 6}
 ```
 
-24 of 27 passing, **0 failing**, 3 in attention:
+25 of 28 passing, **0 failing**, 3 in attention:
 
 - `AC-PRIV-002` — 1 anon-exposed definer function, 0 without a pinned
   `search_path`. The exposed function is an intentional public surface carrying a
@@ -75,7 +84,7 @@ it.
 |-----|---------|--------|--------|
 | `CM-TRUNCGRANT-024` | Privileges outside the RLS-evaluated set are not held by client roles | `tf_security_scan` `tables_truncatable_by_client` | passing |
 | `CM-SCANINTEG-025` | The security scan vouches for its own population and its refusals are heard | `tf_security_scan` `integrity_total` + `stale_exemption_total` | passing |
-| `CM-SIGNALCOV-026` | Every declared detection axis on the checker roster has a consumer that renders it | `tf_controls_signal_coverage` `gap_total` over a ten-checker roster | passing |
+| `CM-SIGNALCOV-026` | Every declared detection axis on the checker roster has a consumer that renders it | `tf_controls_signal_coverage` `gap_total` over an eleven-checker roster | passing |
 
 All three are `automated`, owned by the `CISO` role, and mapped across SOC 2,
 CIS v8 and NIST CSF. The framework mappings are stored on the row, not in this
@@ -148,21 +157,23 @@ evaluator, and the refusal table.
 
 ## What migrations 291 through 306 changed about the register
 
-No new control rows. Sixteen migrations, and the register still reads 27. What
-changed is what one of those rows is capable of asserting.
+No new control rows. Sixteen migrations, and the register still read 27 at the
+close of that batch. What changed is what one of those rows is capable of
+asserting.
 
 `CM-SIGNALCOV-026` used to certify that six declared axes on one checker were
-read. It now certifies four properties across **ten checkers and twenty-four
-axes**: that every rostered checker declares its axes, that every declared axis is
-read by the evaluator into an actual comparison, that every `tf_*` function the
-evaluator calls is on the roster or on an explicit non-checker list, and that
-every checker's refusal flag is honoured. Its title, description and signal string
-were rewritten in migration 306 so the register states the roster and the
-denominator rather than leaving both implicit.
+read. It now certifies four properties across the whole roster, **eleven checkers
+and twenty-five axes** after migration 309 extended it: that every rostered
+checker declares its axes, that every declared axis is read by the evaluator into
+an actual comparison, that every `tf_*` function the evaluator calls is on the
+roster or on an explicit non-checker list, and that every checker's refusal flag
+is honoured. Its title, description and signal string were rewritten in migration
+306 so the register states the roster and the denominator rather than leaving both
+implicit.
 
 Live evidence:
 
-> 10 of 10 rostered checker(s) declare axes; 24 axis(es) declared, 0 unread by
+> 11 of 11 rostered checker(s) declare axes; 25 axis(es) declared, 0 unread by
 > this evaluator []; undeclared [], unmeasured [], unrostered callee(s) [],
 > refusal-ungated []
 
@@ -193,6 +204,52 @@ Read [`CHECKER_AXIS_DECLARATION.md`](./CHECKER_AXIS_DECLARATION.md) for the
 roster table, the three couplings, the strict counter-read needle and the
 runbook.
 
+## Controls added by migrations 307 through 309
+
+| Key | Control | Signal | Status |
+|-----|---------|--------|--------|
+| `CM-FNDECL-028` | Creating a tf_ function without declaring it is impossible, not merely detectable | `tf_declaration_enforcement_audit` `enforcement_gap_total` | passing |
+
+One row, and it is the first control in this register that certifies an
+**impossibility** rather than an observation.
+
+Convention 33 requires three things in the migration that creates a `public.tf_*`
+function: apply a grant tier, declare it in `tf_function_registry`, wire its
+signal into a control. Only the first was structurally enforced. The second was
+detected by `tf_function_safety_audit` `undeclared_total` and rendered by a
+control that runs monthly, which means an undeclared function could sit in the
+inventory for up to a month while everything downstream of the registry, the
+read/write classification, the safety audit, the function count, was quietly
+wrong.
+
+Migration 307 makes it impossible. A `ddl_command_end` event trigger enqueues
+every undeclared `tf_*` function into `tf_declaration_pending`, and a
+`DEFERRABLE INITIALLY DEFERRED` constraint trigger fires at **COMMIT** and aborts
+the transaction if the declaration is still absent.
+
+The design is enforced at the transaction boundary rather than at
+`CREATE FUNCTION` because the catalog rules the simpler design out.
+`tf_function_registry_validate` raises `check_violation` for a row whose function
+does not exist, so a declaration **cannot precede its function**, and there is no
+statement ordering that satisfies both requirements at once. That disproof cost
+one query. Shipping the naive design would have cost a migration that looked
+correct and refused everything.
+
+Two ground conditions were probed before any of it was built, because the design
+depends on both: `apply_migration` is **transactional** (a deliberate abort left
+no table behind and did not increment the migration count), and the `postgres`
+role **can create event triggers** on this project despite `rolsuper = false`.
+
+The control is falsifiable and was falsified on purpose. Inside one self-aborting
+migration the event trigger was disabled, driving `enforcement_gap_total` to 1 and
+`CM-FNDECL-028` to `failing`, then re-enabled, driving both back. The kill switch
+is `ALTER EVENT TRIGGER ... DISABLE`, it requires ownership, and its use is itself
+a monitored axis, so enforcement cannot be turned off quietly.
+
+Read [`DECLARATION_ENFORCEMENT.md`](./DECLARATION_ENFORCEMENT.md) for the
+discarded design, the queue-plus-deferred-trigger mechanism, the verbatim refusal
+transcripts from all three probes, and the operator runbook.
+
 ## Runbook
 
 **Score the board.**
@@ -211,12 +268,26 @@ Expect `ok: true` and `gap_total: 0`, with all five primitives at zero:
 `unread_total`, `undeclared_checker_total`, `unmeasured_checker_total`,
 `unrostered_callee_total` and `ungated_refusal_total`. Each names its offenders in
 a matching array: `unread_axes`, `undeclared_checkers`, `unmeasured_checkers`,
-`unrostered_callees`, `ungated_checkers`. Also expect `checkers_total: 10`,
-`declaring_checker_total: 10` and `axes_total: 24`, which are the denominators.
+`unrostered_callees`, `ungated_checkers`. Also expect `checkers_total: 11`,
+`declaring_checker_total: 11` and `axes_total: 25`, which are the denominators.
 A `checkers_total` that has moved without a migration explaining it is itself the
 finding. The `refusal_flag_honoured` boolean was retired in migration 304 and
 replaced by `ungated_refusal_total`, which asserts the same property across all
-ten checkers rather than one.
+eleven checkers rather than one.
+
+**Prove declaring a new function is not optional.**
+
+```sql
+select public.tf_declaration_enforcement_audit();
+```
+
+Expect `ok: true`, `enforcement_gap_total: 0`, `event_trigger_state: "origin"`,
+and all four components at zero: `enforcement_missing_total`,
+`enforcement_disabled_total`, `pending_residue_total`,
+`unregistered_function_total`. `tf_function_total` and `registry_row_total` should
+be equal, currently 97 and 97. A standing non-zero `pending_residue_total` outside
+a transaction means a commit-time check did not run, and that is a finding no
+matter what the other counters say.
 
 **Prove the board is fresh and every automated control is genuinely scored.**
 
@@ -228,7 +299,8 @@ Expect `ok: true`, `authoritative: true`, `unscored_total: 0`,
 `tautological_total: 0`, and `board_age_hours` well under `threshold_hours`
 (792). A non-zero `unscored_total` names the controls in `unscored_controls`, a
 non-zero `tautological_total` names them in `tautological_controls`, and either
-one drops `authoritative` to false.
+one drops `authoritative` to false. `controls_total` reads 28 and
+`automated_total` reads 22.
 
 Run this **before** `tf_controls_evaluate()` if you want a true age reading. Run
 after, and the age you read is the age of your own run.

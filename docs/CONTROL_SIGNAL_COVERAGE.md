@@ -492,7 +492,9 @@ its payload keys. Every checker now **declares** its axes, and the detector test
 those declarations against the evaluator across the whole roster. Coverage went
 from one checker with six axes to **ten checkers with twenty-four axes**, and the
 control now publishes its own denominator so a reader can tell ten-of-ten from
-one-of-one.
+one-of-one. Migration 309 later added an eleventh checker,
+`tf_declaration_enforcement_audit`, taking the live roster to eleven checkers and
+twenty-five axes.
 
 **Why declaration beats inspection.** Inspection cannot distinguish a **finding**
 from a **population**. `tf_automation_out_of_band` publishes `enabled_total`, the

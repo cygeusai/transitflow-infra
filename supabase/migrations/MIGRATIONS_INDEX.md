@@ -1,6 +1,6 @@
 # Migration Index
 
-The full, ordered migration history of the Transit & Flow backend (306 migrations
+The full, ordered migration history of the Transit & Flow backend (309 migrations
 as of 2026-07-25). Ordinals are the true `row_number() over (order by version)`
 from `supabase_migrations.schema_migrations`, not hand-counted. Run `./scripts/pull-backend.sh` to materialize the actual `.sql`
 files from the live Supabase project into this folder. This index is the manifest
@@ -189,6 +189,43 @@ of what exists so nothing is silently dropped.
 | 304 | 20260725164220 | signal_coverage_generalises_from_one_checker_to_the_full_roster |
 | 305 | 20260725164252 | evaluator_evidence_for_signal_coverage_reports_the_full_roster |
 | 306 | 20260725164321 | signalcov_control_description_states_the_roster_and_its_denominator |
+| 307 | 20260725170331 | require_function_declaration_event_trigger |
+| 308 | 20260725170503 | declaration_enforcement_audit_checker |
+| 309 | 20260725170725 | wire_declaration_enforcement_control |
+
+> **Migrations 307 through 309 are one change**, and they convert an obligation
+> from detected to impossible. Convention 33 says creating a `public.tf_*`
+> function carries three obligations in the same migration: apply a grant tier,
+> declare it in `tf_function_registry`, wire its signal into a control. Only the
+> first was structurally enforced. This batch closes the second. A
+> `ddl_command_end` event trigger enqueues every undeclared `tf_*` function into a
+> transient table, and a `DEFERRABLE INITIALLY DEFERRED` constraint trigger fires
+> at **COMMIT** and aborts the transaction if the declaration is still missing.
+>
+> The obvious design, refusing at `CREATE FUNCTION` time and forcing the author to
+> declare first, is impossible here and the catalog said so before any code was
+> written: `tf_function_registry_validate` raises `check_violation` for a row whose
+> function does not exist yet, so a declaration **cannot precede its function**.
+> There is no ordering that satisfies both requirements, which is what forced
+> enforcement to the transaction boundary. Two probes established the ground
+> conditions first, that `apply_migration` is transactional (a deliberate abort
+> left no table and did not increment the version count) and that `postgres` can
+> create event triggers on this project despite `rolsuper = false`.
+>
+> The guard was proved in three directions, each inside a self-aborting migration:
+> it **refuses** an undeclared function with `ERROR 23514` and a hint that teaches
+> the correct ordering, it does **not over-fire** on the compliant path, and the
+> control built on it is **falsifiable**, disabling the event trigger drove
+> `CM-FNDECL-028` to `failing` and re-enabling it drove it back to `passing`
+> within one transaction. 308 adds `tf_declaration_enforcement_audit`, whose own
+> commit is the production proof of the satisfied path, and whose axes include
+> whether the enforcement itself is missing or disabled, so the kill switch cannot
+> be used quietly. 309 wires `CM-FNDECL-028` with a five-anchor asserted splice.
+> The register moved 27 controls to **28, 25 passing, 0 failing**, and the roster
+> moved ten checkers and twenty-four axes to **eleven and twenty-five**. Full
+> reasoning, the discarded design, the verbatim refusal transcripts and the
+> operator runbook are in
+> [`docs/DECLARATION_ENFORCEMENT.md`](../../docs/DECLARATION_ENFORCEMENT.md).
 
 > **Migrations 270 through 277 were applied by two agents interleaved into one
 > version stream, and that is itself the finding.** Four of these eight (270,

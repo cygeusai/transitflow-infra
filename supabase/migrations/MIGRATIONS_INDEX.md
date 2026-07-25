@@ -147,6 +147,9 @@ of what exists so nothing is silently dropped.
 | 262 | 20260725131610 | grant_tier_audit_coverage_self_enforcement |
 | 263 | 20260725131923 | grant_tier_audit_empty_population_refusal |
 | 264 | 20260725132224 | grant_tier_coverage_enforcement_consumer_widening |
+| 265 | 20260725133630 | guard_detection_exemption_visibility_and_enforcement |
+| 266 | 20260725134042 | guard_detection_empty_population_refusal |
+| 267 | 20260725134156 | guardreg_control_evidence_denominator_widening |
 
 > **Migrations 262 through 264 are one change**, and they are the sequel to
 > 258–261 rather than a repeat of it. That block made the checker's coverage
@@ -189,6 +192,52 @@ of what exists so nothing is silently dropped.
 >
 > Full reasoning, both fixtures, the clone-proof method and the widened runbook
 > are in [`docs/FUNCTION_GRANT_TIERS.md`](../../docs/FUNCTION_GRANT_TIERS.md).
+
+> **Migrations 265 through 267 are one change**, and they are house rule eleven
+> applied to a second checker. Migrations 262 through 264 taught the platform to
+> fail on its own coverage number; a sweep of all eleven checker functions then
+> found that `tf_grant_tier_audit` was the **only** one with any population or
+> coverage concept at all. `tf_guard_detection_audit` was taken first, because
+> `AC-GUARDREG-023` depends on it and because it decides whether every
+> `SECURITY DEFINER` function on the platform carries an authorization predicate.
+>
+> Its defect was worse than the one house rule eleven was written for. It
+> published a bare `scanned` count of 55 and nothing else about its population:
+> not the 57 definer functions actually reachable by `authenticated`, not the two
+> excused into `security_scan_exemptions`, and not their names. That table is a
+> live lever with no cardinality limit and no approval workflow beyond a text
+> column, which made inserting a row the cheapest available way to stop an
+> unguarded function being reported, and made the resulting drop in `scanned`
+> indistinguishable from functions having been deleted.
+>
+> 265 publishes `reachable_total`, `exempted_total` and `exempted_fns`, asserts
+> the partition `reachable = scanned + exempted` inside the audit body so the
+> accounting cannot drift silently, and makes a **stale** exemption, a row naming
+> anything that is not a definer function reachable by `authenticated`, a gating
+> integrity violation. A stale exemption is a pre-authorised hole waiting for
+> something to be created under that name. Proved by planting one, asserting
+> `stale_exemption_total` rose while `exempted_total` did **not**, asserting
+> `AC-GUARDREG-023` went `failing`, then removing it and asserting full recovery.
+>
+> 266 makes the audit refuse an empty population. Unlike migration 263's
+> equivalent, this failure is inducible against the live object, because the lever
+> that empties it is a table anybody can insert into: exempt all 57 and `scanned`
+> is zero while the partition still holds at `57 = 0 + 57`. The proof inserts
+> exactly one row per reachable definer function, asserts the count inserted
+> equals the previous scan size, captures the raise, asserts the message names the
+> denominator it refused over, asserts the control stopped reading `passing`, then
+> restores and asserts every counter and the evidence string returned to baseline.
+>
+> 267 widens the `AC-GUARDREG-023` evidence string additively, per convention 21,
+> so the board reads `[population 57 reachable, 2 exempted, 0 stale exemption(s)]`
+> beside the scanned count. Its proof has two parts: exempting a real function
+> must show the shrink **and** attribute it, without failing the control; planting
+> a stale exemption must name it, fail the control, and not inflate
+> `exempted_total`.
+>
+> Full reasoning, both raises verbatim, the runbook for stale exemptions and the
+> re-measured state are in
+> [`docs/GUARD_DETECTION.md`](../../docs/GUARD_DETECTION.md).
 
 > **Migrations 258 through 261 are one change**, split into four so each half of
 > the work could be asserted before the next was applied. They close a coverage

@@ -249,13 +249,31 @@ because of a comment. Read the body. Either add a real authorization predicate,
 or, if the function genuinely discloses nothing tenant-specific, add a row to
 `security_scan_exemptions` with a written reason and an `approved_by`. The
 exemption table currently holds two rows, both with reasons, and that is the
-standard it should be held to.
+standard it should be held to. Since migration 265 the exemption is no longer
+free: every row shows up in `exempted_total` and `exempted_fns`, and since
+migration 267 the count is printed on the control board, so excusing a function
+is a visible act rather than a silent one.
 
 **If `integrity_violation_total` is non-zero.** Read
 `integrity_violations`. An empty registry means somebody truncated the table;
 reseed it from migration 253. A scanner that no longer calls `tf_guard_pattern`
 or `tf_strip_sql_comments` means somebody replaced `tf_security_scan` with an
-older definition; restore the migration 254 body.
+older definition; restore the migration 254 body. A stale exemption, added at
+migration 265, means a row in `security_scan_exemptions` names something that is
+not a definer function reachable by `authenticated`: either the function was
+renamed or dropped and the exemption was not, or the row was typed against a
+name that never existed. Read `stale_exemption_fns`, confirm the function is
+genuinely gone, and delete the row. Do not "fix" it by creating a function under
+that name, which is exactly the hole the check exists to prevent.
+
+**If the audit raises instead of returning.** Two raises are possible and both
+are deliberate. `internal inconsistency: reachable N does not equal scanned N
+plus exempted N` means the scan population and the exemption accounting have
+diverged, which should be impossible without an edit to the function; re-read
+`pg_get_functiondef` and compare against migration 265. `refuses to certify an
+empty population`, added at migration 266, means every reachable definer function
+has been excused; read `security_scan_exemptions` in full, because a scan that
+scanned nothing is not a pass and the platform will not pretend otherwise.
 
 **Adding a sixteenth guard helper.** Insert the row, nothing else. The scanner
 picks it up on the next call because it reads the table.
@@ -272,12 +290,15 @@ reappears.
 
 ---
 
-## 6. State after migration 264
+## 6. State after migration 267
 
 | Measurement | Value |
 | --- | --- |
-| Migrations | 264 |
+| Migrations | 267 |
 | Registered guard helpers | 15 |
+| Definer functions reachable by `authenticated` | 57 |
+| Exempted by `security_scan_exemptions` | 2 |
+| Stale exemptions | 0 |
 | Definer functions scanned | 55 |
 | Unguarded | 0 |
 | Comment-only guard matches | 0 |
@@ -292,6 +313,11 @@ reappears.
 | Grant-tier coverage enforced | yes, since migration 262 (`uncovered_total` gates `violation_total`) |
 | Grant-tier empty-population refusal | yes, since migration 263 |
 | Grant-tier violations | 0 |
+| Guard-scan denominator published | yes, since migration 265 (`reachable_total`, `exempted_total`, `exempted_fns`) |
+| Guard-scan partition asserted | yes, since migration 265 (`reachable = scanned + exempted`) |
+| Stale exemption is a violation | yes, since migration 265 |
+| Guard-scan empty-population refusal | yes, since migration 266 |
+| Denominator visible on the control board | yes, since migration 267 |
 | Automation flags enabled | 0 of 13 |
 
 Declared grant tiers stood at **18** through migration 257. Migrations 258
@@ -322,6 +348,63 @@ its own population, 15 registered helpers over 55 definer functions scanned, and
 from house rule eleven to it: what fails when the scanned population drops, and
 what does it report when that population is empty? Those are the checks 262 and
 263 installed on the grant audit, and they belong on this one too.
+
+**Migrations 265 through 267 answered those two questions, and the answers were
+worse than the grant-audit case.** The grant audit at least computed a coverage
+percentage before anybody thought to gate on it. This checker published a bare
+`scanned` count of 55 and nothing else about its population. It did not publish
+how many definer functions were actually reachable, it did not publish how many
+had been excused, and it did not name the excused ones. A reader could not tell
+`0 unguarded of 55` from `0 unguarded of 55, with thirty more excused`. That
+matters because `security_scan_exemptions` is a live table with no cardinality
+limit and no approval workflow beyond a text column, which made inserting a row
+into it the cheapest available way to stop an unguarded function being reported.
+The lever that shrinks the denominator was not visible in the number it shrinks.
+
+Migration 265 published the decomposition, `reachable_total`, `exempted_total`
+and `exempted_fns`, and asserted the partition `reachable = scanned + exempted`
+inside the audit itself, so a future edit that drops functions from the scan for
+some reason other than an exemption raises rather than under-reports. It also
+made a **stale exemption** an integrity violation: a row naming something that
+is not a definer function reachable by `authenticated` is a pre-authorised hole
+waiting for something to be created under that name, which is the guard-scan
+analogue of `missing_total` in the grant audit. The proof planted one such row,
+asserted `stale_exemption_total` rose, asserted `exempted_total` did **not**
+rise, asserted `AC-GUARDREG-023` went red, then removed it and asserted every
+counter returned to baseline.
+
+Migration 266 installed the empty-population refusal, and unlike migration 263
+this one is proved by induction against the live object rather than on a derived
+clone. The lever is right there: exempt every reachable definer function and the
+scan population is zero, the partition still holds because `57 = 0 + 57`, and the
+pre-266 audit would have returned `ok: true, unguarded_total: 0` over nothing at
+all. The proof inserts exactly that many fixture exemptions, asserts the count
+inserted matches the previous scan size, asserts the audit now raises with
+
+> tf_guard_detection_audit refuses to certify an empty population: 0 definer
+> function(s) scanned, 57 reachable by authenticated and 57 exempted. A guard
+> scan that scanned nothing is not a pass.
+
+asserts `AC-GUARDREG-023` no longer reads passing, then deletes the fixtures and
+asserts full recovery. The refusal names the denominator deliberately, so the
+operator reading the raise knows the scan was **emptied** rather than merely
+broken.
+
+Migration 267 carried the decomposition to the place people actually read,
+additively, per convention 21. The control evidence now reads:
+
+> 0 guard-detection integrity violation(s) plus comment-only guard match(es)
+> across 55 definer fn(s), 15 registered helper(s) [population 57 reachable, 2
+> exempted, 0 stale exemption(s)]
+
+Its proof has two parts. Part A exempts one real reachable function and asserts
+the board shows both the reduced scan count and the raised exemption count, so a
+shrinking denominator is attributed rather than mysterious, and asserts the
+control stays green because excusing a real function with a written reason is
+not itself a defect. Part B plants a stale exemption and asserts the board names
+it, goes `failing`, and does **not** inflate `exempted_total`. Both parts restore
+and the evidence string is asserted equal to its baseline text, character for
+character.
 
 The two controls reading `attention` are `AC-MFA-003` and `DP-PITR-007`. Both
 are owner actions, tracked in ClickUp, and neither is a code defect.

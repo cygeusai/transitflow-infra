@@ -4,7 +4,7 @@ The single troubleshooting reference for the Transit & Flow backend. Written to
 be read at 2am by someone who did not build it.
 
 State captured 2026-07-25 against Supabase project `kjooyhvynkzuvsixsutt` at
-migration 264. Every number in this document was read out of the live database,
+migration 267. Every number in this document was read out of the live database,
 not remembered.
 
 ---
@@ -165,6 +165,9 @@ Routed by what you observe. Each row names the check to run first.
 | `CM-GRANT-021` evidence says "across N of 84" with N below 84 | somebody created a `tf_*` function without a `tf_apply_grant_tier` call in the same migration | `tf_grant_tier_audit()` → `coverage_pct` and the `violations` array, which names it |
 | `CM-GRANT-021` reads `failing` and the named function is reachable by nobody | since migration 262 an undeclared tier is a violation whether or not anything can reach it, because unreachable is not the same as *intended* to be unreachable | `tf_grant_tier_audit()` → `uncovered_total` and `uncovered_unreachable_total`; the violation row carries `reachable_by: 'none'` and a ready `tf_apply_grant_tier` remedy |
 | `CM-GRANT-021` reads `attention` with no evidence string at all | `tf_grant_tier_audit()` itself raised, so `tf_controls_evaluate` caught it and propagated null; since migration 263 the most likely cause is the empty-population refusal | call `select public.tf_grant_tier_audit();` directly and read the raise: `refuses to certify` means the `tf_*` population came back zero |
+| `AC-GUARDREG-023` evidence shows a scanned count below 55 | functions were excused into `security_scan_exemptions`, or dropped; since migration 267 the evidence says which, in the `[population R reachable, E exempted, S stale exemption(s)]` suffix | `tf_guard_detection_audit()` → `exempted_fns` names every excused function; compare `reachable_total` against the previous reading |
+| `AC-GUARDREG-023` reads `failing` and names a stale exemption | a row in `security_scan_exemptions` names something that is not a definer function reachable by `authenticated`, usually a rename or drop that left the exemption behind | `tf_guard_detection_audit()` → `stale_exemption_fns`; confirm the function is gone, then delete the row. Never create a function under that name to satisfy it |
+| `AC-GUARDREG-023` reads `attention` with no evidence string | the audit raised and `tf_controls_evaluate` propagated null; since migration 266 the likely cause is the empty-population refusal | `select public.tf_guard_detection_audit();` and read the raise: `refuses to certify an empty population` means every reachable definer function has been excused |
 | Two customer records for one person | Dedup sweep has not run, or phones differ in format | `tf_merge_duplicate_customers(true)` (dry run) |
 | Scheduled report did not arrive in Slack | Cron fired but Slack connector degraded | `tf_scheduler_health()` then the `integration_settings` query above |
 | A `tf_*` call raises `42883` or does something unexpected | The name implies a read; the function is a writer | *The first ten minutes*, side-effect table |
@@ -611,7 +614,7 @@ event, because the next operator has no way to know whether it was safe.
 
 ## Conventions register
 
-Twenty-four conventions. Repeatedly, the highest-yield defect on this platform has been two writers
+Twenty-five conventions. Repeatedly, the highest-yield defect on this platform has been two writers
 each holding a different convention, both correct in isolation, silently
 disagreeing at the seam. Every one of these is now enforced somewhere the
 disagreement becomes an error at write time rather than a discrepancy at read
@@ -643,6 +646,7 @@ time.
 | 22 | A checker's own coverage is a violation class, not a statistic | if the register a checker reads is incomplete, the checker **fails**; a shortfall is folded into `violation_total`, not merely printed next to it | `tf_grant_tier_audit` `uncovered_total`, gating since migration 262, proved by an untiered fixture reachable by nobody |
 | 23 | A checker must refuse on an empty population, not certify one | zero inputs is a failed measurement, and the checker raises rather than dividing into a denominator of nothing and reporting 100 percent | `tf_grant_tier_audit` empty-population raise, migration 263; `tf_controls_evaluate` propagates null, so the control reads `attention` rather than `passing` |
 | 24 | Prove by inducing the failure; where the live object cannot be broken, prove on a derived clone and say so | build the clone from the live catalog text by asserted mechanical substitutions, name it outside the population being measured so the proof does not perturb itself, assert every substitution landed and that the branch under test survived, drop it, then label the proof as weaker than an induced one **in writing** | migration 263's `zz__granttier_refusal_clone()`, labelled in `FUNCTION_GRANT_TIERS.md` as the weakest of the three proofs in that document |
+| 25 | An exclusion lever must be visible in the number it shrinks, and a stale exclusion is a violation | a checker that supports exclusions publishes the full population, the excluded count and the excluded names, asserts the partition `population = measured + excluded` in its own body, and treats an exclusion naming nothing real as a violation rather than a curiosity | `tf_guard_detection_audit` `reachable_total` / `exempted_total` / `exempted_fns` / `stale_exemption_total`, gating since migration 265, surfaced on `AC-GUARDREG-023` since migration 267, proved by a planted stale exemption |
 
 The countermeasure that keeps working is the same every time: express the
 convention in the database, on the *normalised* form of the value, so violation
@@ -941,6 +945,43 @@ general shape here is worth carrying to every other checker on the platform:
 control.** Ask of any coverage figure, what happens when this drops? If the
 answer is "the string changes", it is inert.
 
+**The denominator with a lever attached.** Carrying the question above to a
+second checker produced a sharper version of the same defect, and this one had a
+control-tampering shape rather than an oversight shape.
+`tf_guard_detection_audit` is the function that decides whether every
+security-definer function on the platform carries an authorization predicate. It
+published one population number, `scanned`, which read 55. It did not publish how
+many definer functions were actually reachable by `authenticated`, which was 57.
+It did not publish that two had been excused, and it did not name them. And
+`security_scan_exemptions`, the table that does the excusing, has no cardinality
+limit, no approval workflow beyond a free-text `approved_by` column, and no
+counter anywhere in the payload.
+
+The consequence is not that the number was incomplete. It is that the number had
+a lever attached and the lever was invisible from the readout. An operator facing
+an unguarded function had two ways to make the finding go away: add a guard, or
+add a row. The second is faster, requires no review, and moves the reported
+figure in a direction that reads like the population simply shrank. Nobody
+comparing two readings a month apart could distinguish thirty functions deleted
+from thirty functions excused.
+
+Migration 265 published `reachable_total`, `exempted_total` and `exempted_fns`,
+and asserted `reachable = scanned + exempted` inside the audit body, so a future
+edit that drops functions from the scan for any other reason raises instead of
+under-reporting. It also made a **stale** exemption a gating violation, a row
+naming something that is not a definer function reachable by `authenticated`
+being a pre-authorised hole waiting for something to be created under that name.
+Migration 266 added the empty-population refusal, and here the failure was
+inducible against the live object rather than needing a derived clone, because
+the lever itself is the induction: exempt all 57 and `scanned` is zero while the
+partition still holds. Migration 267 put the decomposition on the control board.
+
+The general shape: **an exclusion mechanism that does not appear in the metric it
+excludes from is not a governance feature, it is an undocumented override.** Ask
+of any checker with an exemption list, a skip list, an allowlist or an ignore
+file: if somebody adds everything to it, what does this report? If the answer is
+"success", the list is the attack.
+
 **The half-revoke that revokes nothing.** Found while building the fixture above.
 PostgreSQL grants EXECUTE to the PUBLIC pseudo-role on every newly created
 function, independently of Supabase's named-role default privileges. Because
@@ -956,7 +997,7 @@ assertion, which is the harness working exactly as intended.
 
 ## The house rules
 
-Eleven rules, each of which exists because breaking it cost real time.
+Twelve rules, each of which exists because breaking it cost real time.
 
 **A migration that creates or replaces a function must drive that function in a
 post-check, not inspect it.** Migration 229 in this repo's ordinal series applied
@@ -1064,6 +1105,26 @@ belong on every metric a checker returns. **What fails when this number goes
 bad?** If the answer is "the wording of a string", nothing fails. **What does
 this report when its input is empty?** If the answer is "success", the checker
 rewards its own blindness.
+
+**Every lever that shrinks what a checker measures must appear in what the
+checker reports.** The twelfth rule came from turning the eleventh on a second
+checker and finding a worse version of the same defect. `tf_guard_detection_audit`
+decides whether every security-definer function on the platform carries an
+authorization predicate. It published a bare `scanned` count of 55, and
+`security_scan_exemptions` sat beside it as a live table, no cardinality limit,
+no approval workflow beyond a text column, whose entire purpose is to remove
+functions from that 55. The count moved when somebody inserted a row and the
+payload never said an exemption was the reason. That makes inserting a row the
+cheapest available way to stop an unguarded function being reported, and it does
+not look like tampering, it looks like the number going down. Migrations 265
+through 267 published the whole decomposition, asserted the partition
+`reachable = scanned + exempted` inside the function so the accounting cannot
+drift silently, made an exemption naming nothing real a gating violation, made an
+emptied population a refusal, and carried all of it onto the control board where
+an auditor reads it. Ask of every checker that supports an exclusion list: **if
+somebody excludes everything, what does this say?** and **can a reader tell an
+excused function from a deleted one?** A denominator with an undisclosed lever
+attached is not a measurement, it is a dial.
 
 ---
 
@@ -1422,7 +1483,7 @@ Read live from the catalog, not counted by hand.
 
 | | Count |
 | --- | --- |
-| Migrations applied | 264 |
+| Migrations applied | 267 |
 | Base tables in `public` | 171 |
 | Tables with RLS enabled | 171 (100%) |
 | RLS policies | 582 |
@@ -1557,7 +1618,7 @@ subject-specific notes beside it in `docs/`:
 - `FUNCTION_GRANT_TIERS.md` — the three-tier grant model, the Supabase default-privileges trap, `CM-GRANT-021`, the coverage defect closed by migrations 258 through 261 and the coverage *enforcement* added by 262 through 264
 - `AUTOMATION_ARMING.md` — the automation registry, the bounding model, the blast-radius predicate contract, the arming sequence and its refusal classes, `CM-NOTEDRIFT-022`
 - `GUARD_DETECTION.md` — how a `SECURITY DEFINER` function is judged guarded, the guard predicate registry, the comment-stripped match, the comments-gated / literals-advisory line, `AC-GUARDREG-023`, and the induced comment-only guard that proves the chain
-- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`, and 258 through 264 with theirs in `FUNCTION_GRANT_TIERS.md`
+- `MIGRATIONS_INDEX.md` — the ordered migration manifest; migrations 249 through 252 are checked in verbatim beside it as worked examples of the anchored catalog-patch idiom, 253 through 257 are indexed with their reasoning carried in `GUARD_DETECTION.md`, 258 through 264 with theirs in `FUNCTION_GRANT_TIERS.md`, and 265 through 267 with theirs back in `GUARD_DETECTION.md`
 
 Notion carries the same material for non-engineers under **🧭 Operations Hub —
 SOPs & FAQs**, with persona-routed SOPs and FAQs. ClickUp carries the
@@ -1833,6 +1894,69 @@ one question: what fails when this drops? If the answer is "the wording of a
 string", nothing fails. And the mirror-image question is just as load-bearing:
 what does this report when its input is empty? If the answer is "success", the
 cheapest way to pass the control is to delete the evidence.
+
+**Pass 7, 2026-07-25, at migration 267.** Pass 6 ended by writing house rule
+eleven and immediately raised an obvious question about its own scope: it had
+been applied to exactly one checker. Pass 7 opened by sweeping all eleven checker
+functions on the platform for any coverage, population or empty-input concept.
+`tf_grant_tier_audit` was the only one that had any. The other ten,
+`tf_function_safety_audit`, `tf_security_scan`, `tf_guard_detection_audit`,
+`tf_automation_note_drift`, `tf_boolean_default_hazards`,
+`tf_automation_out_of_band`, `tf_revenue_linkage_audit`, `tf_queue_health`,
+`tf_scheduler_health` and `tf_access_review`, contained no population word, no
+coverage word and no empty-population refusal anywhere in their bodies.
+
+`tf_guard_detection_audit` was taken first, because `AC-GUARDREG-023` depends on
+it and because it is the function that decides whether every security-definer
+function on the platform carries an authorization predicate. What it found there
+was worse than the shape house rule eleven was written to catch.
+
+| Claim carried into this pass | What the catalog said | Resolution |
+| --- | --- | --- |
+| Guard detection publishes its population | it published `scanned`, 55, and nothing else about the population. The reachable definer count, 57, was never computed | migration 265 publishes `reachable_total`, `exempted_total` and `exempted_fns` |
+| An exemption is an accountable act | `security_scan_exemptions` shrank the scan population with no counter anywhere in the payload. A reader could not distinguish 0-unguarded-of-55 from 0-unguarded-of-55-with-thirty-excused | migration 265 names every excused function; migration 267 puts the count on the control board |
+| The scan population accounting cannot drift | nothing tied `scanned` to the population it was drawn from | migration 265 asserts `reachable = scanned + exempted` inside the audit body and raises on divergence |
+| An exemption row is harmless if the function is gone | a row naming a dropped or misspelled function is a pre-authorised hole waiting for something to be created under that name | migration 265 makes a stale exemption a gating integrity violation, proved by planting one and observing `AC-GUARDREG-023` go `failing` |
+| The audit cannot be emptied | exempting all 57 reachable definer functions drives `scanned` to zero, the partition still holds at `57 = 0 + 57`, and the audit returned `ok: true, unguarded_total: 0` over nothing | migration 266 raises: *"A guard scan that scanned nothing is not a pass."* |
+| Migrations 264, conventions 24, house rules 11 | 267 / 25 / 12 | inventory, conventions register, house rules, defect-pattern library, `GUARD_DETECTION.md` re-read and re-counted |
+
+One convention went into the register this pass, number 25: **an exclusion lever
+must be visible in the number it shrinks, and a stale exclusion is a violation**.
+One defect class went into the library, **the denominator with a lever attached**,
+and one house rule went in as the twelfth: *every lever that shrinks what a
+checker measures must appear in what the checker reports*.
+
+**On the strongest proof in the set, also stated deliberately.** Pass 6 had to
+write down that its empty-population proof was the weak kind, a derived clone,
+because the live object could not be broken. Pass 7 did not have that problem and
+the reason is itself the finding. The empty-population failure on the guard scan
+is inducible against the live function, because the lever that empties it is a
+table anybody can insert into. Migration 266's proof inserts one exemption row
+per reachable definer function, asserts the number inserted equals the previous
+scan size so the fixture is exactly the emptying and nothing more, captures the
+raise, asserts the message names the denominator it refused over, asserts
+`AC-GUARDREG-023` stopped reading `passing`, then deletes every fixture row and
+asserts the row count, all five payload counters, the control status and the
+control's evidence string are back where they started. That a checker's blind
+spot could be induced this easily from ordinary table access is the argument for
+migration 265, not a footnote to it.
+
+Everything re-measured this pass agreed on the second reading: 267 migrations,
+271 functions in `public`, 84 `tf_*` functions, grant-tier coverage still 100.0
+with `violation_total` 0, 57 definer functions reachable by `authenticated`, 2
+exempted with written reasons, 0 stale, 55 scanned, 0 unguarded, 0 comment-only,
+0 integrity violations, 15 registered guard helpers, 23 controls at 21 passing /
+2 attention / 0 failing, and no proof-fixture residue in
+`security_scan_exemptions`. The two in `attention` remain `AC-MFA-003` and
+`DP-PITR-007`, both owner actions. All thirteen automation flags read `false`.
+
+The finding worth carrying forward: pass 6 asked what happens when the verifier's
+own number goes bad, and pass 7 asks **who is allowed to move it**. A metric with
+an undisclosed exclusion lever is not a weaker metric, it is a different kind of
+object: a dial that reads like a gauge. The remaining nine checkers have not yet
+been put through this and that is the next pass, in the order
+`tf_function_safety_audit`, `tf_security_scan`, `tf_access_review`, then the
+rest.
 
 ---
 

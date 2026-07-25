@@ -44,7 +44,7 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - [`SECURITY_GUARDS_AND_QUEUE_LANES.md`](./SECURITY_GUARDS_AND_QUEUE_LANES.md) — definer-guard axis, `AC-DEFN-017`, queue lane registry, orphan reason codes
 - [`FUNCTION_GRANT_TIERS.md`](./FUNCTION_GRANT_TIERS.md) — the three-tier `EXECUTE` model, the Supabase default-privileges trap and its Postgres-native PUBLIC twin, `tf_apply_grant_tier`, `CM-GRANT-021`, **the coverage defect closed by migrations 258 through 261** (a checker whose own coverage was decided by the population it was checking), and **the coverage enforcement added by migrations 262 through 264** (publishing a denominator is not the same as failing on it)
 - [`AUTOMATION_ARMING.md`](./AUTOMATION_ARMING.md) — **read before arming anything that reaches a customer.** The thirteen-automation registry, the four-value bounding model, the blast-radius predicate contract, the eight-step arming sequence and its five refusal classes, and the copy-paste arm/disarm/audit runbook
-- [`GUARD_DETECTION.md`](./GUARD_DETECTION.md) — **how the platform decides a `SECURITY DEFINER` function is guarded, and why that decision was wrong until migration 254.** The guard predicate registry, the comment-stripping match, the comments-gated / literals-advisory line, control `AC-GUARDREG-023`, and the induced comment-only guard that proves the whole chain catches
+- [`GUARD_DETECTION.md`](./GUARD_DETECTION.md) — **how the platform decides a `SECURITY DEFINER` function is guarded, and why that decision was wrong until migration 254.** The guard predicate registry, the comment-stripping match, the comments-gated / literals-advisory line, control `AC-GUARDREG-023`, the induced comment-only guard that proves the whole chain catches, and **the exemption-lever defect closed by migrations 265 through 267** (a scan whose denominator could be shrunk by anyone with insert access, with no counter in the payload saying so)
 
 ## Interactive artifacts (this folder)
 Self-contained HTML. Open directly in a browser, no build step, no network.
@@ -110,6 +110,19 @@ Self-contained HTML. Open directly in a browser, no build step, no network.
   each substitution landed and that the branch under test survived into the
   clone. Label such a proof as weaker than an induced one, in the document, in
   writing. Migration 263 does this for the empty-population refusal.
+- Every lever that shrinks what a checker measures must appear in what the
+  checker reports. `tf_guard_detection_audit` published a scanned count of 55 and
+  said nothing about the 57 definer functions actually reachable or the two
+  excused into `security_scan_exemptions`, a table with no cardinality limit and
+  no approval workflow beyond a text column. That made inserting a row the
+  cheapest way to stop an unguarded function being reported, and made the drop
+  look like the population had simply shrunk. Since migration 265 the audit
+  publishes `reachable_total`, `exempted_total` and `exempted_fns`, asserts
+  `reachable = scanned + exempted` in its own body, and treats an exemption
+  naming nothing real as a gating violation. Since 266 it refuses an emptied
+  population, and since 267 the decomposition is on the control board. Ask of any
+  checker with an exemption, skip or ignore list: if somebody adds everything to
+  it, what does this report? If the answer is "success", the list is the attack.
 - Widen a signal, never repurpose a key. When migration 259 widened the
   undeclared sweep, `undeclared_anon_total` kept its original meaning as a strict
   subset and `undeclared_reachable_total` was added beside it. Redefining a key

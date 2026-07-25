@@ -23,6 +23,14 @@ mirrored operationally in ClickUp. This folder is the code-side index.
 - List: "Property Management — Roadmap & Ops" (roadmap, action items, defects).
 - Doc: "Property Management & Portals — Ops Reference".
 
+## Platform engineering notes (this folder)
+- [`CUSTOMER_360.md`](./CUSTOMER_360.md) — customer read model, index + 360 RPCs
+- [`JOB_PREP_INTAKE.md`](./JOB_PREP_INTAKE.md) — prep-text guard ladder, reminder ladder, expiry
+- [`SCHEDULER_AND_QUEUE_RELIABILITY.md`](./SCHEDULER_AND_QUEUE_RELIABILITY.md) — pg_cron + queue health
+- [`CLOSED_LOOP_AUTOTICKETING.md`](./CLOSED_LOOP_AUTOTICKETING.md) — self-ticketing and self-healing
+- [`RELIABILITY_INTEGRATION_WATCHDOG.md`](./RELIABILITY_INTEGRATION_WATCHDOG.md) — connector watchdog
+- [`IT_GOVERNANCE_GRC.md`](./IT_GOVERNANCE_GRC.md) — controls, access certification, SLOs
+
 ## Conventions
 - The database is the source of truth for access control (RLS).
 - Documents are generated from `document_templates` + shortcodes, not hard-coded.

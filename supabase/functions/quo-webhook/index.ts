@@ -137,7 +137,7 @@ const JOBTOK = "([A-Za-z]{2,6}-?[A-Za-z0-9-]{2,})";
 const json = (s: number, o: unknown, extraHeaders?: Record<string, string>) => new Response(JSON.stringify(o), { status: s, headers: { "Content-Type": "application/json", ...(extraHeaders ?? {}) } });
 
 async function handle(req: Request): Promise<Response> {
-  if (req.method === "GET") return json(200, { ok: true, service: "quo-webhook", version: 22, consent_gate: "tf_consent_gate", consent_capture: "tf_consent_inbound_keyword", body_drain: "the handler is wrapped, so every return path drains the request body", dispatch_commands: "migration 255 (tf_dispatch_*)", inbound_paging: "tf_page_inbound_sms classifies the event key server side (m335); this function never names one" });
+  if (req.method === "GET") return json(200, { ok: true, service: "quo-webhook", version: 23, consent_gate: "tf_consent_gate", consent_capture: "tf_consent_inbound_keyword", body_drain: "the handler is wrapped, so every return path drains the request body", dispatch_commands: "migration 255 (tf_dispatch_*)", inbound_paging: "tf_page_inbound_sms classifies the event key server side (m335); this function never names one" });
   if (req.method !== "POST") return json(405, { error: "Method not allowed" });
 
   const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -249,8 +249,8 @@ async function handle(req: Request): Promise<Response> {
       });
       if (logErr) console.error("quo-webhook could not log an unscreened inbound message:", logErr.message);
       if (await pageAllowed("quo_consent_page", "screen", 1, 900)) {
-        await pageStaff("compliance", "consent_screen_unavailable", "🚨 Consent screening is DOWN — inbound SMS is being held",
-          `tf_consent_inbound_keyword failed: ${kwFailure.slice(0, 300)}\n\nquo-webhook is refusing to process inbound SMS until this clears, because it cannot tell a STOP from a service request and must not answer someone who has opted out. Messages are still being written to the inbox${logErr ? " — EXCEPT this one, whose insert also failed: " + logErr.message : ""}. Work the inbox manually and call ${DISPATCH_PHONE} customers back by phone until this is fixed.\n\nHeld message from ${fromNum}: ${body.slice(0, 400)}`,
+        await pageStaff("compliance", "consent_screen_unavailable", "🚨 Consent screening is DOWN, inbound SMS is being held",
+          `tf_consent_inbound_keyword failed: ${kwFailure.slice(0, 300)}\n\nquo-webhook is refusing to process inbound SMS until this clears, because it cannot tell a STOP from a service request and must not answer someone who has opted out. Messages are still being written to the inbox${logErr ? ", EXCEPT this one, whose insert also failed: " + logErr.message : ""}. Work the inbox manually and call ${DISPATCH_PHONE} customers back by phone until this is fixed.\n\nHeld message from ${fromNum}: ${body.slice(0, 400)}`,
           "communications", null);
       }
       return json(503, { ok: false, error: "consent_check_unavailable", logged: !logErr, note: "Message held. No lead created, no AI routing, no outbound send." });
@@ -359,10 +359,10 @@ async function handle(req: Request): Promise<Response> {
   async function dispatchWriteFailed(action: string, jobNum: string | null, jid: string | null, r: any) {
     const detail = `${r?.reason ?? "unknown"}${r?.error ? ": " + String(r.error).slice(0, 300) : ""}`;
     console.error(`quo-webhook dispatch write failed (${action}) for ${jobNum ?? jid ?? "unknown job"}: ${detail}`);
-    await sendSms(fromNum, `⚠️ We could NOT record that for ${jobNum ?? "your job"}. Nothing has changed on the board — please don't assume it went through. Call dispatch at ${DISPATCH_PHONE} and we'll log it manually.`, "command_failed");
+    await sendSms(fromNum, `⚠️ We could NOT record that for ${jobNum ?? "your job"}. Nothing has changed on the board, so please don't assume it went through. Call dispatch at ${DISPATCH_PHONE} and we'll log it manually.`, "command_failed");
     await pageStaff("dispatch", "dispatch_command_not_recorded",
-      `🚨 ${jobNum ?? "A job"} — technician's "${action}" did NOT save`,
-      `${fromNum} texted a ${action} for ${jobNum ?? jid ?? "an unknown job"} and the write failed: ${detail}\n\nThe job board is UNCHANGED. The technician has been told to call ${DISPATCH_PHONE}. Update the job by hand and confirm with him directly — do not assume he is en route or on site.\n\nOriginal message: ${body.slice(0, 300)}`,
+      `🚨 ${jobNum ?? "A job"}: technician's "${action}" did NOT save`,
+      `${fromNum} texted a ${action} for ${jobNum ?? jid ?? "an unknown job"} and the write failed: ${detail}\n\nThe job board is UNCHANGED. The technician has been told to call ${DISPATCH_PHONE}. Update the job by hand and confirm with him directly. Do not assume he is en route or on site.\n\nOriginal message: ${body.slice(0, 300)}`,
       jid ? "jobs" : null, jid);
   }
 
@@ -397,10 +397,10 @@ async function handle(req: Request): Promise<Response> {
         ? `the customer window ${etTime(job.arrival_window_start)}–${etTime(arrivalBy)}`
         : `within ${ARRIVAL_WINDOW_HOURS} hours (by ${etTime(arrivalBy)})`;
       await sendSms(fromNum, `✅ You got ${job.job_number}! Your pay if completed: $${Number((res as any).expected_pay ?? 0).toFixed(2)}. You MUST arrive in ${windowText}. Not on site by then without notice = ${LATE_PENALTY_PCT}% pay penalty. Reply \"ETA ${job.job_number} 45 min\" with your ETA, and \"ARRIVED ${job.job_number}\" when you're on site.`, "job_won");
-      for (const loser of ((res as any).losers ?? [])) { if (loser && loser !== fromNum) await sendSms(loser, `Job ${job.job_number} has been filled. Thanks for the fast response — we'll send the next one.`, "job_filled"); }
+      for (const loser of ((res as any).losers ?? [])) { if (loser && loser !== fromNum) await sendSms(loser, `Job ${job.job_number} has been filled. Thanks for the fast response, we'll send the next one.`, "job_filled"); }
       await notifyOffice(`🤝 ${job.job_number} accepted`, `Claimed via SMS. Arrival by ${etTime(arrivalBy)} (${LATE_PENALTY_PCT}% late penalty). Dispatched.`, job.id);
       return "accepted";
-    } else if (result === "already_filled") { await sendSms(fromNum, `Sorry — ${job.job_number} was just filled by another tech. We'll send the next one.`, "job_filled"); return "already_filled"; }
+    } else if (result === "already_filled") { await sendSms(fromNum, `Sorry, ${job.job_number} was just filled by another tech. We'll send the next one.`, "job_filled"); return "already_filled"; }
     await sendSms(fromNum, `You're not on the offer list for ${job.job_number}. Contact dispatch.`); return "invalid";
   }
 
@@ -413,7 +413,7 @@ async function handle(req: Request): Promise<Response> {
     const windowText = (job.arrival_window_start && arrivalBy && arrivalBy === job.arrival_window_end)
       ? `arrival window ${etTime(job.arrival_window_start)}–${etTime(arrivalBy)}`
       : `arrival by ${etTime(arrivalBy)}`;
-    await sendSms(fromNum, `✅ Confirmed — you've got ${job.job_number}. ${windowText}. Reply \"ETA ${job.job_number} 45 min\" with your ETA, and \"ARRIVED ${job.job_number}\" when you're on site.`, "job_confirmed");
+    await sendSms(fromNum, `✅ Confirmed, you've got ${job.job_number}. ${windowText}. Reply \"ETA ${job.job_number} 45 min\" with your ETA, and \"ARRIVED ${job.job_number}\" when you're on site.`, "job_confirmed");
     await notifyOffice(`🤝 ${job.job_number} confirmed`, `Technician confirmed the assignment via SMS (YES).`, job.id);
     return true;
   }
@@ -437,7 +437,7 @@ async function handle(req: Request): Promise<Response> {
     const callToDigits = String(toNum).replace(/\D/g, "").slice(-10);
     const useAiLine = !!aiLine && callToDigits && callToDigits === String(aiLine).replace(/\D/g, "").slice(-10);
     const sendFromNum = useAiLine ? aiLine : fromNumber;
-    const text = "Hi, this is Transit & Flow — sorry we missed your call! What can we help you with today? Reply here and we'll get you taken care of right away.";
+    const text = "Hi, this is Transit & Flow. Sorry we missed your call! What can we help you with today? Reply here and we'll get you taken care of right away.";
     // Gated: a caller who has opted out of texts does not get an automated text back, even though
     // they just dialed us. The blocked attempt is still recorded, which also suppresses the 30-minute
     // retry above, so we do not re-litigate the same refusal on every subsequent missed call.
@@ -452,7 +452,7 @@ async function handle(req: Request): Promise<Response> {
     // duplicate leads get manufactured for the same caller.
     if (!leadId2 && !lreadErr) {
       const { data: src } = await sb.from("lead_sources").select("id").eq("company_id", COMPANY_ID).eq("key", "phone").limit(1);
-      const { data: ins, error: insLeadErr } = await sb.from("leads").insert({ company_id: COMPANY_ID, source_id: src?.[0]?.id ?? null, status: "new", phone: fromNum, service_description: "Missed call — auto text-back", meta: { origin: "missed_call" } }).select("id").single();
+      const { data: ins, error: insLeadErr } = await sb.from("leads").insert({ company_id: COMPANY_ID, source_id: src?.[0]?.id ?? null, status: "new", phone: fromNum, service_description: "Missed call, auto text-back", meta: { origin: "missed_call" } }).select("id").single();
       if (insLeadErr) { leadCreateError = insLeadErr.message; console.error("missed-call lead insert failed:", insLeadErr.message); }
       leadId2 = ins?.id ?? null;
     }
@@ -465,7 +465,7 @@ async function handle(req: Request): Promise<Response> {
     const lines = [
       `Missed call from ${fromNum}.`,
       textback.sent ? "Auto text-back sent." : `Auto text-back NOT sent (${textback.reason ?? "unknown"}). Call them back.`,
-      leadId2 ? "A lead is on the board." : `NO LEAD WAS CREATED${leadCreateError ? " (" + leadCreateError.slice(0, 200) + ")" : ""} — this caller is not tracked anywhere. Add them by hand.`,
+      leadId2 ? "A lead is on the board." : `NO LEAD WAS CREATED${leadCreateError ? " (" + leadCreateError.slice(0, 200) + ")" : ""}. This caller is not tracked anywhere. Add them by hand.`,
     ];
     await pageStaff("dispatch", "missed_call", `📞 Missed call from ${fromNum}`, lines.join(" "), leadId2 ? "leads" : null, leadId2);
     return json(200, { ok: true, call: type, missed_textback: textback.sent, blocked_reason: textback.sent ? null : (textback.reason ?? null), lead_id: leadId2, lead_created: !!leadId2 });
@@ -504,7 +504,7 @@ async function handle(req: Request): Promise<Response> {
     if (mAccept) {
       const job = await findJob(mAccept[2]); const techId = await findTech();
       if (!job) { await sendSms(fromNum, `We couldn't find job ${mAccept[2]}.`); }
-      else if (!techId) { await sendSms(fromNum, `Your number isn't linked to a technician profile yet — contact dispatch.`); }
+      else if (!techId) { await sendSms(fromNum, `Your number isn't linked to a technician profile yet. Contact dispatch and we'll get you set up.`); }
       else { jobId = job.id; jobNumber = job.job_number; senderKind = "technician"; const r = await acceptOfferedJob(job, techId); command = { type: r === "accepted" ? "accept" : (r === "already_filled" ? "accept_late" : (r === "write_failed" ? "accept_write_failed" : "accept_invalid")), job_number: job.job_number }; }
     } else if (mDecline) {
       const job = await findJob(mDecline[2]); const techId = await findTech();
@@ -512,7 +512,7 @@ async function handle(req: Request): Promise<Response> {
         jobId = job.id; jobNumber = job.job_number; senderKind = "technician";
         const { error: decErr } = await sb.rpc("tf_decline_offer", { p_job_id: job.id, p_technician_id: techId });
         if (decErr) { command = { type: "decline_write_failed", job_number: job.job_number }; await dispatchWriteFailed("decline", job.job_number, job.id, { reason: "rpc_error", error: decErr.message }); }
-        else { command = { type: "decline", job_number: job.job_number }; await sendSms(fromNum, `Got it — passed on ${job.job_number}. Thanks for the quick reply.`); }
+        else { command = { type: "decline", job_number: job.job_number }; await sendSms(fromNum, `Got it, passed on ${job.job_number}. Thanks for the quick reply.`); }
       }
     } else if (mEta) {
       const job = await findJob(mEta[2]);
@@ -526,7 +526,7 @@ async function handle(req: Request): Promise<Response> {
           else {
             command = { type: "eta", job_number: job.job_number };
             await sendSms(fromNum, `✅ ETA logged for ${job.job_number}: ${etTime(iso)}. Reminders stopped.`);
-            await notifyOffice(`🚐 ETA set — ${job.job_number}`, `Technician ETA: ${etTime(iso)}.${d.status_changed ? " Job moved to en route." : ""}`, job.id);
+            await notifyOffice(`🚐 ETA set, ${job.job_number}`, `Technician ETA: ${etTime(iso)}.${d.status_changed ? " Job moved to en route." : ""}`, job.id);
           }
         }
         else { await sendSms(fromNum, `Couldn't read the ETA. Try \"ETA ${job.job_number} 45 min\" or \"ETA ${job.job_number} 3:15pm\".`); command = { type: "eta_unparsed" }; }
@@ -540,8 +540,8 @@ async function handle(req: Request): Promise<Response> {
         if (d?.ok !== true) { command = { type: "arrived_write_failed", job_number: job.job_number }; await dispatchWriteFailed("on-site arrival", job.job_number, job.id, d); }
         else {
           command = { type: "arrived", job_number: job.job_number };
-          await sendSms(fromNum, `✅ Marked on-site for ${job.job_number}. Thanks — have a great job!`);
-          if (d.already_on_site !== true) await notifyOffice(`📍 On-site — ${job.job_number}`, `Technician marked arrival via SMS.`, job.id);
+          await sendSms(fromNum, `✅ Marked on-site for ${job.job_number}. Thanks, and have a great job!`);
+          if (d.already_on_site !== true) await notifyOffice(`📍 On-site, ${job.job_number}`, `Technician marked arrival via SMS.`, job.id);
         }
       }
       else { await sendSms(fromNum, `We couldn't find job ${mArrived[2]}.`); }
@@ -556,8 +556,8 @@ async function handle(req: Request): Promise<Response> {
         if (d?.ok !== true) { command = { type: "reschedule_write_failed", job_number: job.job_number }; await dispatchWriteFailed("reschedule request", job.job_number, job.id, d); }
         else {
           command = { type: "reschedule", job_number: job.job_number };
-          await sendSms(fromNum, `📅 Got it — ${job.job_number} flagged for reschedule. Office notified.`);
-          await notifyOffice(`⚠️ Reschedule needed — ${job.job_number}`, `Reason: ${d.reason ?? reason ?? "(none)"}. On hold — contact customer to rebook.`, job.id);
+          await sendSms(fromNum, `📅 Got it, ${job.job_number} flagged for reschedule. Office notified.`);
+          await notifyOffice(`⚠️ Reschedule needed, ${job.job_number}`, `Reason: ${d.reason ?? reason ?? "(none)"}. On hold, contact the customer to rebook.`, job.id);
         }
       }
     } else if (mBareYes || mBareNo) {
@@ -576,7 +576,7 @@ async function handle(req: Request): Promise<Response> {
           const pick: any = (asgns ?? []).find((a: any) => a.jobs && BARE_ACTIONABLE_STATUSES.has(String(a.jobs.status)));
           if (!pick) {
             senderKind = "technician"; command = { type: mBareYes ? "bare_yes_nojob" : "bare_no_nojob" };
-            await sendSms(fromNum, `Thanks! We don't see an open job assigned to you right now — dispatch will reach out if we need you. To act on a specific job, reply \"YES <job#>\" or \"NO <job#>\".`, "bare_no_open");
+            await sendSms(fromNum, `Thanks! We don't see an open job assigned to you right now, and dispatch will reach out if we need you. To act on a specific job, reply \"YES <job#>\" or \"NO <job#>\".`, "bare_no_open");
           } else {
             const job = pick.jobs; jobId = job.id; jobNumber = job.job_number; senderKind = "technician";
             if (mBareYes) {
@@ -597,7 +597,7 @@ async function handle(req: Request): Promise<Response> {
               }
               command = { type: declined ? "decline" : "decline_write_failed", job_number: job.job_number };
               if (declined) {
-                await sendSms(fromNum, `Got it — you're off ${job.job_number}. Thanks for the quick reply; dispatch will reassign.`, "job_declined");
+                await sendSms(fromNum, `Got it, you're off ${job.job_number}. Thanks for the quick reply; dispatch will reassign.`, "job_declined");
                 await notifyOffice(`⚠️ ${job.job_number} declined by tech`, `Technician declined via SMS (NO). Needs reassignment.`, job.id);
               }
             }
@@ -628,7 +628,7 @@ async function handle(req: Request): Promise<Response> {
       if (!jobId && (rr as any).job_id) { jobId = (rr as any).job_id; jobNumber = (rr as any).job_number; }
       const gurl = (rr as any).google_url ?? reviewUrl;
       if ((rr as any).is_promoter && gurl) {
-        const sent = await sendSms(fromNum, `That's wonderful to hear — thank you! 🙌 If you have 30 seconds, a quick Google review would mean the world to us: ${gurl}`, "review_link", "review_request");
+        const sent = await sendSms(fromNum, `That's wonderful to hear, thank you! 🙌 If you have 30 seconds, a quick Google review would mean the world to us: ${gurl}`, "review_link", "review_request");
         // Only claim the link was sent if it was. Marking it sent after a blocked or failed send is
         // how a promoter never gets asked and the report still says we asked.
         if (sent.sent) {
@@ -636,14 +636,21 @@ async function handle(req: Request): Promise<Response> {
           if (rqErr) console.error("review_requests update failed:", rqErr.message);
         }
       } else {
-        await sendSms(fromNum, `Thank you for the honest feedback — we're sorry we didn't hit the mark. A Transit & Flow manager will reach out personally to make it right.`, "review_recovery");
-        await notifyOffice(`⭐ ${rating}-star rating — service recovery${jobNumber ? " ("+jobNumber+")" : ""}`, `Customer rated ${rating}/5. Please reach out to make it right.`, jobId);
+        await sendSms(fromNum, `Thank you for the honest feedback, and we're sorry we didn't hit the mark. A Transit & Flow manager will reach out personally to make it right.`, "review_recovery");
+        await notifyOffice(`⭐ ${rating}-star rating, service recovery${jobNumber ? " ("+jobNumber+")" : ""}`, `Customer rated ${rating}/5. Please reach out to make it right.`, jobId);
       }
     }
   }
 
   let saved = 0;
   let unfiled = 0;
+  // What to call the thing in the reply. Texted media is nearly always a photo of
+  // the problem, and "file" reads like a helpdesk ticket.
+  const allImages = media.length > 0 && media.every((m) => (m.type || "").startsWith("image/"));
+  const mediaNoun = (n: number) => allImages ? (n === 1 ? "photo" : "photos") : (n === 1 ? "file" : "files");
+  const mediaCount = (n: number) => n === 1 ? `your ${mediaNoun(1)}` : `your ${n} ${mediaNoun(n)}`;
+  const mediaIt = (n: number) => n === 1 ? "it" : "them";
+  const mediaIts = (n: number) => n === 1 ? "It's" : "They're";
   if (direction === "inbound" && media.length) {
     const folder = jobId ? `${COMPANY_ID}/${jobId}` : `${COMPANY_ID}/unfiled`;
     for (let i = 0; i < Math.min(media.length, 10); i++) {
@@ -666,9 +673,19 @@ async function handle(req: Request): Promise<Response> {
         } else { unfiled++; }
       } catch (e) { console.error("media handling threw:", String((e as Error).message)); }
     }
-    if (unfiled > 0 && jobId) {
-      await pageStaff("dispatch", "job_photo_not_filed", `⚠️ ${unfiled} texted photo${unfiled === 1 ? "" : "s"} did not attach to ${jobNumber ?? "a job"}`,
-        `${fromNum} texted ${unfiled} file${unfiled === 1 ? "" : "s"} that uploaded to storage but could not be attached to the job record, so they will not appear on the job. Path prefix: ${COMPANY_ID}/${jobId}/`, "jobs", jobId);
+    // The && jobId here was the bug. The COMMON unfiled case is the one where no
+    // job could be matched at all, which is exactly when jobId is NULL, so this
+    // page never fired for it. The files sat in {company}/unfiled/ and the only
+    // recovery path was the customer replying with a job number. Both shapes now
+    // page, because in both of them a customer is waiting and nothing points at
+    // their files.
+    if (unfiled > 0) {
+      await pageStaff("dispatch", "job_photo_not_filed",
+        `${unfiled} texted ${mediaNoun(unfiled)} from ${fromNum || "an unknown number"} ${unfiled === 1 ? "is" : "are"} not on a job`,
+        jobId
+          ? `${unfiled} ${mediaNoun(unfiled)} uploaded to storage but could not be attached to ${jobNumber ?? "the matched job"}, so they will not appear on it. Storage prefix: ${COMPANY_ID}/${jobId}/`
+          : `${unfiled} ${mediaNoun(unfiled)} uploaded to storage but no job could be matched to the sender, so nothing references them. Storage prefix: ${COMPANY_ID}/unfiled/`,
+        jobId ? "jobs" : null, jobId);
     }
   }
 
@@ -696,9 +713,18 @@ async function handle(req: Request): Promise<Response> {
   }
 
   if (direction === "inbound" && media.length && fromNum && !command) {
+    // Three outcomes, three different truths, and NONE of them asks the customer
+    // to look up an internal identifier. A person who has just photographed a
+    // leak is not the right party to resolve our record keeping. Whenever we
+    // could not file something, the reply ends by taking the job off them, and
+    // the pageStaff call above is what makes that promise real rather than
+    // reassuring noise.
+    const n = (jobId && saved > 0) ? saved : media.length;
     const content = (jobId && saved > 0)
-      ? `Transit & Flow: got ${saved} file${saved === 1 ? "" : "s"} — filed to job ${jobNumber}. 📸✅`
-      : `Transit & Flow: got your file${media.length === 1 ? "" : "s"} but couldn't file ${media.length === 1 ? "it" : "them"} to a job yet. Reply with the job number and we'll take care of it.`;
+      ? `Transit & Flow: got ${mediaCount(n)}, thank you. ${mediaIts(n)} on your job now and your technician will see ${mediaIt(n)}.`
+      : jobId
+        ? `Transit & Flow: got ${mediaCount(n)}, thank you. We're adding ${mediaIt(n)} to your job and someone will confirm shortly, so there's nothing you need to do.`
+        : `Transit & Flow: got ${mediaCount(n)}, thank you. Someone on our team is matching ${mediaIt(n)} to your job right now, so there's nothing you need to do.`;
     await sendSms(fromNum, content, "media_confirmation");
   }
   if (direction === "inbound" && !command && !media.length && !aiHandled) { await pageInboundSms(fromNum, body, jobId); }

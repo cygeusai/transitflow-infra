@@ -1,0 +1,64 @@
+# Transit & Flow - edge function verify_jwt baseline
+#
+# verify_jwt is a GATEWAY control, not a function control. When true, Supabase
+# rejects a request with no Authorization header before the isolate runs. When
+# false, the gateway is open and the FUNCTION must authenticate itself, which
+# for a webhook means a provider signature and for an internal worker means a
+# shared secret.
+#
+# "false" is therefore not a weaker setting, it is a different one, and it is
+# correct for every inbound webhook: Twilio, Quo, Housecall Pro, Meta, Slack,
+# Stripe and Shopify do not send a Supabase JWT.
+#
+# Measured from production on 2026-08-16 with mcp list_edge_functions. This file
+# is the recorded posture; scripts/verify_verify_jwt.py fails when the live
+# platform drifts from it. Change a value here only in the same commit that
+# deliberately changes the platform, and say why in the commit message.
+#
+# Columns: slug<TAB>verify_jwt<TAB>version<TAB>gate
+#   gate = open   -> gateway does not check a JWT; the function authenticates itself
+#   gate = jwt    -> gateway requires an Authorization header
+slug	verify_jwt	version	gate
+afo-voice	false	7	open
+ai-assist	true	6	jwt
+ai-booking	false	15	open
+ai-gateway	true	2	jwt
+cygeus-api	true	2	jwt
+cygeus-selftest	true	2	jwt
+estimate-approve	true	2	jwt
+hcp-estimate-push	true	5	jwt
+hcp-update-phone	false	3	open
+hcp-webhook	false	8	open
+intake-automation	true	8	jwt
+intake-context	false	1	open
+intake-request	true	1	jwt
+intake-submit	false	6	open
+public-apply	false	3	open
+qbo-connect	false	2	open
+qbo-sync	false	4	open
+quo-messenger	false	3	open
+quo-send	true	2	jwt
+quo-webhook	false	21	open
+restoration-fnol	false	12	open
+shopify-webhook	false	3	open
+slack-webhook	false	3	open
+tf-admin-provision-user	true	2	jwt
+tf-clickup-worker	false	5	open
+tf-draft-review-reply	false	4	open
+tf-drain-probe	true	2	jwt
+tf-fair-credit	true	1	jwt
+tf-flow-assistant	true	1	jwt
+tf-hcp-job-push	false	2	open
+tf-hcp-sync-techs	true	4	jwt
+tf-live-connect	false	4	open
+tf-meta-webhook	false	3	open
+tf-metrics-export	false	4	open
+tf-omni-inbound	true	7	jwt
+tf-omni-send	false	6	open
+tf-rent-pay	true	2	jwt
+tf-review-sweep	false	3	open
+tf-site-ingest	true	4	jwt
+tf-slack	true	6	jwt
+tf-status	false	3	open
+tf-stripe-webhook	false	3	open
+tf-twilio-setup	true	2	jwt

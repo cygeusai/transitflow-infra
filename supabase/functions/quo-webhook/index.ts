@@ -137,7 +137,7 @@ const JOBTOK = "([A-Za-z]{2,6}-?[A-Za-z0-9-]{2,})";
 const json = (s: number, o: unknown, extraHeaders?: Record<string, string>) => new Response(JSON.stringify(o), { status: s, headers: { "Content-Type": "application/json", ...(extraHeaders ?? {}) } });
 
 async function handle(req: Request): Promise<Response> {
-  if (req.method === "GET") return json(200, { ok: true, service: "quo-webhook", version: 23, consent_gate: "tf_consent_gate", consent_capture: "tf_consent_inbound_keyword", body_drain: "the handler is wrapped, so every return path drains the request body", dispatch_commands: "migration 255 (tf_dispatch_*)", inbound_paging: "tf_page_inbound_sms classifies the event key server side (m335); this function never names one" });
+  if (req.method === "GET") return json(200, { ok: true, service: "quo-webhook", version: 24, consent_gate: "tf_consent_gate", consent_capture: "tf_consent_inbound_keyword", body_drain: "the handler is wrapped, so every return path drains the request body", dispatch_commands: "migration 255 (tf_dispatch_*)", inbound_paging: "tf_page_inbound_sms classifies the event key server side (m335); this function never names one", front_door_leads: "unknown senders become leads via tf_lead_from_inbound_sms (m343), on both the text and media paths" });
   if (req.method !== "POST") return json(405, { error: "Method not allowed" });
 
   const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -680,6 +680,19 @@ async function handle(req: Request): Promise<Response> {
     // page, because in both of them a customer is waiting and nothing points at
     // their files.
     if (unfiled > 0) {
+      // m343 executive decision: an unknown sender who texts the business
+      // becomes a lead. The media path resolves customers before this point,
+      // so customerId still null here means front-door traffic. Recording a
+      // lead contacts nobody; failure to record must never cost the page.
+      if (!customerId && fromNum) {
+        try {
+          const { data: leadRes, error: lErr } = await sb.rpc("tf_lead_from_inbound_sms", {
+            p_company_id: COMPANY_ID, p_from: fromNum, p_body: body || null,
+          });
+          if (lErr) console.error("tf_lead_from_inbound_sms failed:", lErr.message);
+          else if (leadRes?.created) console.log("front-door lead created:", leadRes.lead_id);
+        } catch (e) { console.error("lead-from-inbound threw:", String((e as Error).message)); }
+      }
       await pageStaff("dispatch", "job_photo_not_filed",
         `${unfiled} texted ${mediaNoun(unfiled)} from ${fromNum || "an unknown number"} ${unfiled === 1 ? "is" : "are"} not on a job`,
         jobId

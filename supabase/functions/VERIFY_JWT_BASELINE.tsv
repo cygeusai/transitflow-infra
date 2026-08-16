@@ -38,7 +38,7 @@ qbo-connect	false	2	open
 qbo-sync	false	4	open
 quo-messenger	false	3	open
 quo-send	true	2	jwt
-quo-webhook	false	23	open
+quo-webhook	false	24	open
 restoration-fnol	false	12	open
 shopify-webhook	false	3	open
 slack-webhook	false	3	open

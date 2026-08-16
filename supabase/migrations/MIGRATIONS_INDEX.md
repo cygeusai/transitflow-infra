@@ -913,3 +913,12 @@ of what exists so nothing is silently dropped.
 | 455 | 20260815223419 | m329_null_fabricated_schedules_and_forbid_them_structurally |
 | 456 | 20260815224136 | m330_regression_a17_fabricated_schedule_ratchet |
 | 457 | 20260816091237 | tf_studio_project_to_estimate_v5_onsite_verification |
+| 458 | 20260816123240 | m331_notification_routing_layer |
+| 459 | 20260816123335 | add_shopify_to_job_source_enum |
+| 460 | 20260816123947 | declare_rls_intent_on_new_tables |
+| 461 | 20260816124037 | fix_rebate_view_security_invoker |
+| 462 | 20260816124104 | flow_catalog_snapshot_drop_definer_rights |
+| 463 | 20260816124818 | m332_notification_render |
+| 464 | 20260816130059 | m333_notification_drain_routing_aware |
+| 465 | 20260816131123 | ecommerce_event_taxonomy_and_routing |
+| 466 | 20260816131538 | m334_retire_flow_catalog_snapshot_allowlist_row |

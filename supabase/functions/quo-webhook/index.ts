@@ -137,7 +137,7 @@ const JOBTOK = "([A-Za-z]{2,6}-?[A-Za-z0-9-]{2,})";
 const json = (s: number, o: unknown, extraHeaders?: Record<string, string>) => new Response(JSON.stringify(o), { status: s, headers: { "Content-Type": "application/json", ...(extraHeaders ?? {}) } });
 
 async function handle(req: Request): Promise<Response> {
-  if (req.method === "GET") return json(200, { ok: true, service: "quo-webhook", version: 24, consent_gate: "tf_consent_gate", consent_capture: "tf_consent_inbound_keyword", body_drain: "the handler is wrapped, so every return path drains the request body", dispatch_commands: "migration 255 (tf_dispatch_*)", inbound_paging: "tf_page_inbound_sms classifies the event key server side (m335); this function never names one", front_door_leads: "unknown senders become leads via tf_lead_from_inbound_sms (m343), on both the text and media paths" });
+  if (req.method === "GET") return json(200, { ok: true, service: "quo-webhook", version: 25, consent_gate: "tf_consent_gate", consent_capture: "tf_consent_inbound_keyword", body_drain: "the handler is wrapped, so every return path drains the request body", dispatch_commands: "migration 255 (tf_dispatch_*)", inbound_paging: "tf_page_inbound_sms classifies the event key server side (m335); this function never names one", front_door_leads: "unknown senders become leads via tf_lead_from_inbound_sms (m343), on both the text and media paths" });
   if (req.method !== "POST") return json(405, { error: "Method not allowed" });
 
   const sb = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
@@ -644,6 +644,7 @@ async function handle(req: Request): Promise<Response> {
 
   let saved = 0;
   let unfiled = 0;
+  let lost = 0;
   // What to call the thing in the reply. Texted media is nearly always a photo of
   // the problem, and "file" reads like a helpdesk ticket.
   const allImages = media.length > 0 && media.every((m) => (m.type || "").startsWith("image/"));
@@ -655,15 +656,21 @@ async function handle(req: Request): Promise<Response> {
     const folder = jobId ? `${COMPANY_ID}/${jobId}` : `${COMPANY_ID}/unfiled`;
     for (let i = 0; i < Math.min(media.length, 10); i++) {
       try {
+        // m346. Every early exit here used to be a silent loss: the fetch fails,
+        // nothing lands in storage, no counter moves, no page fires, and the
+        // customer still gets a reply saying we have their photo. On 17 August a
+        // caller's two photos vanished exactly this way, found only because
+        // assertion A21 went red. A photo we could not receive is LOST, not
+        // unfiled, and both the customer and dispatch get the truth about it.
         const resp = await fetch(media[i].url);
-        if (!resp.ok) continue;
+        if (!resp.ok) { lost++; console.error(`media fetch ${resp.status} for ${media[i].url.slice(0, 120)}`); continue; }
         const buf = new Uint8Array(await resp.arrayBuffer());
-        if (buf.byteLength > 25 * 1024 * 1024) continue;
+        if (buf.byteLength > 25 * 1024 * 1024) { lost++; console.error(`media oversized (${buf.byteLength}b), not stored`); continue; }
         const ctype = resp.headers.get("content-type") ?? media[i].type;
         const fname = `${new Date().toISOString().replace(/[:.]/g, "-")}-${i + 1}.${extFromType(ctype)}`;
         const path = `${folder}/${fname}`;
         const { error: upErr } = await sb.storage.from("job-photos").upload(path, buf, { contentType: ctype, upsert: false });
-        if (upErr) { console.error("job-photo upload failed:", upErr.message); continue; }
+        if (upErr) { lost++; console.error("job-photo upload failed:", upErr.message); continue; }
         if (jobId) {
           // 'saved' used to increment here regardless of the insert result, so a failed row produced
           // a file in storage that no job references and a text telling the sender it was filed.
@@ -671,7 +678,7 @@ async function handle(req: Request): Promise<Response> {
           if (attErr) { console.error("job_attachments insert failed:", attErr.message); unfiled++; continue; }
           saved++;
         } else { unfiled++; }
-      } catch (e) { console.error("media handling threw:", String((e as Error).message)); }
+      } catch (e) { lost++; console.error("media handling threw:", String((e as Error).message)); }
     }
     // The && jobId here was the bug. The COMMON unfiled case is the one where no
     // job could be matched at all, which is exactly when jobId is NULL, so this
@@ -680,19 +687,6 @@ async function handle(req: Request): Promise<Response> {
     // page, because in both of them a customer is waiting and nothing points at
     // their files.
     if (unfiled > 0) {
-      // m343 executive decision: an unknown sender who texts the business
-      // becomes a lead. The media path resolves customers before this point,
-      // so customerId still null here means front-door traffic. Recording a
-      // lead contacts nobody; failure to record must never cost the page.
-      if (!customerId && fromNum) {
-        try {
-          const { data: leadRes, error: lErr } = await sb.rpc("tf_lead_from_inbound_sms", {
-            p_company_id: COMPANY_ID, p_from: fromNum, p_body: body || null,
-          });
-          if (lErr) console.error("tf_lead_from_inbound_sms failed:", lErr.message);
-          else if (leadRes?.created) console.log("front-door lead created:", leadRes.lead_id);
-        } catch (e) { console.error("lead-from-inbound threw:", String((e as Error).message)); }
-      }
       await pageStaff("dispatch", "job_photo_not_filed",
         `${unfiled} texted ${mediaNoun(unfiled)} from ${fromNum || "an unknown number"} ${unfiled === 1 ? "is" : "are"} not on a job`,
         jobId
@@ -702,7 +696,30 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
-  const { error: insErr } = await sb.from("communications").insert({ company_id: COMPANY_ID, customer_id: customerId, job_id: jobId, direction, channel: "sms", provider: "quo", from_number: fromNum || null, to_number: toNum || null, body, status: direction === "inbound" ? "received" : "delivered", provider_message_id: msgId, conversation_id: data.conversationId ?? null, meta: { event_type: type, sender_kind: senderKind, media_count: media.length, media_saved: saved, media_unfiled: unfiled, job_number: jobNumber, command: command?.type ?? null, line: "main" } });
+  // m343/m346: an unknown sender who texts the business becomes a lead, and
+  // since 17 August that no longer depends on whether their attachment survived
+  // the storage round trip. The message itself is the signal. The photos of a
+  // failed upload are gone either way; the person must not be.
+  if (direction === "inbound" && !customerId && fromNum && (media.length > 0 || (body ?? "").trim().length > 0) && !command) {
+    try {
+      const { data: leadRes, error: lErr } = await sb.rpc("tf_lead_from_inbound_sms", {
+        p_company_id: COMPANY_ID, p_from: fromNum, p_body: body || null,
+      });
+      if (lErr) console.error("tf_lead_from_inbound_sms failed:", lErr.message);
+      else if (leadRes?.created) console.log("front-door lead created:", leadRes.lead_id);
+    } catch (e) { console.error("lead-from-inbound threw:", String((e as Error).message)); }
+  }
+
+  if (lost > 0) {
+    // Loud, not fatal. The files cannot be recovered from here; the customer can
+    // resend, and dispatch needs to know a resend was requested.
+    await pageStaff("dispatch", "media_receive_failed",
+      `${lost} ${lost === 1 ? "file" : "files"} from ${fromNum || "an unknown number"} never reached storage`,
+      `The provider gave us ${media.length} attachment link${media.length === 1 ? "" : "s"} and ${lost} could not be downloaded or stored, so ${lost === 1 ? "it is" : "they are"} not in the Hub at all. The customer has been asked to resend.${jobNumber ? " Job: " + jobNumber + "." : ""}`,
+      jobId ? "jobs" : null, jobId);
+  }
+
+  const { error: insErr } = await sb.from("communications").insert({ company_id: COMPANY_ID, customer_id: customerId, job_id: jobId, direction, channel: "sms", provider: "quo", from_number: fromNum || null, to_number: toNum || null, body, status: direction === "inbound" ? "received" : "delivered", provider_message_id: msgId, conversation_id: data.conversationId ?? null, meta: { event_type: type, sender_kind: senderKind, media_count: media.length, media_saved: saved, media_unfiled: unfiled, media_lost: lost, job_number: jobNumber, command: command?.type ?? null, line: "main" } });
   if (insErr) {
     // An inbound message that never reaches the inbox is invisible to every human in the company.
     // The page carries the text itself so it can be acted on without recovering the row.
@@ -733,7 +750,11 @@ async function handle(req: Request): Promise<Response> {
     // the pageStaff call above is what makes that promise real rather than
     // reassuring noise.
     const n = (jobId && saved > 0) ? saved : media.length;
-    const content = (jobId && saved > 0)
+    // If NOTHING survived the storage round trip, saying "we got your photo"
+    // is a lie with a customer attached. Ask for a resend instead.
+    const content = (lost > 0 && saved === 0 && unfiled === 0)
+      ? `Transit & Flow: your ${mediaNoun(media.length)} didn't come through on our end, sorry about that. Could you send ${mediaIt(media.length)} again? A person is watching for ${mediaIt(media.length)}.`
+      : (jobId && saved > 0)
       ? `Transit & Flow: got ${mediaCount(n)}, thank you. ${mediaIts(n)} on your job now and your technician will see ${mediaIt(n)}.`
       : jobId
         ? `Transit & Flow: got ${mediaCount(n)}, thank you. We're adding ${mediaIt(n)} to your job and someone will confirm shortly, so there's nothing you need to do.`

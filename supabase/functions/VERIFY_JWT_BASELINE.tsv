@@ -26,7 +26,7 @@ ai-gateway	true	2	jwt
 cygeus-api	true	2	jwt
 cygeus-selftest	true	2	jwt
 estimate-approve	true	2	jwt
-hcp-estimate-push	true	5	jwt
+hcp-estimate-push	true	6	jwt
 hcp-update-phone	false	3	open
 hcp-webhook	false	8	open
 intake-automation	true	8	jwt
@@ -38,9 +38,9 @@ qbo-connect	false	2	open
 qbo-sync	false	4	open
 quo-messenger	false	3	open
 quo-send	true	2	jwt
-quo-webhook	false	24	open
+quo-webhook	false	25	open
 restoration-fnol	false	12	open
-shopify-webhook	false	3	open
+shopify-webhook	false	8	open
 slack-webhook	false	3	open
 tf-admin-provision-user	true	2	jwt
 tf-clickup-worker	false	5	open
@@ -48,7 +48,7 @@ tf-draft-review-reply	false	4	open
 tf-drain-probe	true	2	jwt
 tf-fair-credit	true	1	jwt
 tf-flow-assistant	true	1	jwt
-tf-hcp-job-push	false	2	open
+tf-hcp-job-push	true	4	jwt
 tf-hcp-sync-techs	true	4	jwt
 tf-live-connect	false	4	open
 tf-meta-webhook	false	3	open

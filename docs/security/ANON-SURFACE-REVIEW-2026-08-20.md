@@ -103,3 +103,57 @@ Running the suite against `DEMO - Transit & Flow Sandbox` reports A7 and A18
 failing. That company has no outbound SMS sender and no Slack channel mapping,
 which is what a sandbox should look like. The suite is company-scoped; run it
 against `ff000000-0000-4000-b000-000000000001` for the production board.
+
+---
+
+# Addendum: what the red board exposed about the watcher (m359, m360)
+
+Closing the board surfaced a worse problem than the board itself. The hourly
+regression watcher paged `#information-technology` every time the suite was
+red and said **nothing at all** when it went green.
+
+Between 19:09 and 00:09 the team received seven "2 critical assertion(s)
+failing" pages. On recovery they would have received zero. The ticket closes
+itself in the ticket system, which nobody was watching, while the last thing
+Slack ever said was that the platform was broken. An alarm that fires but
+never stands down trains people to ignore the alarm.
+
+Three defects, all in `tf_regression_autoticket`:
+
+1. **No recovery signal.** Fixed by paging once on the red-to-green
+   transition. The edge is `tickets_resolved > 0`, which is true exactly once
+   per crossing and false on every steady-state green tick, so the recovery
+   message never becomes an hourly heartbeat.
+2. **`exception when others then null` around `tf_request_ticket`.** A ticket
+   that failed to open produced no error, no warning, and `ok:true` with
+   `tickets_opened: 0`. Now warns and lands in an `errors` array that drives
+   the `ok` flag.
+3. **The same swallow around `tf_resolve_ticket`.** Same fix.
+
+`m360` then closed two follow-ons found by running the thing rather than
+trusting it:
+
+- `tf_page_staff_sev` reported `scope_recognized: false` for `internal_ops`.
+  It worked only because the function seeds an owner + system_administrator
+  floor before adding scope roles, so an unknown scope degrades to that floor.
+  For a platform regression that floor is the right audience, but happening to
+  be right is not a design. The scope is now declared. Nobody's paging
+  changed.
+- `tf_page_staff_sev` absorbs its own exceptions and returns them in the
+  payload rather than raising, so m359's error capture would have missed a
+  failed page entirely. The watcher now reads the returned payload too.
+
+## End-to-end proof
+
+Not a structural check. The real path ran:
+
+| time (UTC) | event |
+|---|---|
+| 00:09 | watcher pages `#information-technology`, 2 critical failing |
+| 00:51 / 00:53 | m357 and m358 applied, board returns to 21/21 |
+| 01:01 | watcher run: ticket resolved 1, recovery page enqueued |
+| 01:02:00 | recovery notification **delivered**, `delivered_channel = slack` |
+| 01:03 | steady-state run: `tickets_resolved 0`, `recovery_paged null` |
+
+The last row is the one that matters as much as the delivery: the recovery
+message fires on the transition and stays quiet afterwards.

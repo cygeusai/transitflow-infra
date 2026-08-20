@@ -5,6 +5,9 @@
 - `main` is protected and always deployable.
 - Branch per change: `feat/…`, `fix/…`, `chore/…`, `docs/…`.
 - Open a pull request; CI must pass and one review is required before merge.
+- Commits stranded in a session that cannot push are recovered with a git
+  bundle: see [`docs/PHONE_BUNDLE_HANDOFF.md`](docs/PHONE_BUNDLE_HANDOFF.md).
+  Bundled work lands on a branch and goes through review like anything else.
 
 ## Database changes (migrations)
 
